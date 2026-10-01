@@ -10,6 +10,7 @@ url="https://github.com/SHORiN-KiWATA/linuxqq-wayland-screenshare-fix"
 license=('MIT')
 depends=('glibc' 'glib2' 'linuxqq')
 makedepends=('libpulse' 'libpipewire' 'pkgconf')
+options=('!debug')
 optdepends=('xdg-desktop-portal: 屏幕录制（需要合成器对应的后端）')
 
 _root="$startdir/../.."
