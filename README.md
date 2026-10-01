@@ -1,6 +1,6 @@
 # linuxqq-wayland-fix
 
-修复 Linux QQ 以 **Wayland** 运行时的屏幕分享和剪贴板异常。
+修复 Linux QQ 以 **Wayland** 运行时的屏幕分享、剪贴板和截图异常。
 
 >本项目接替 linuxqq-wayland-native-screenshare-fix 和 [linuxqq-clipsync](https://github.com/SHORiN-KiWATA/linuxqq-clipsync)。
 
@@ -46,6 +46,10 @@ sudo make install PREFIX=/usr
   
   照常复制粘贴即可。
 
+- 截图
+  
+  照常按截图键（默认 Ctrl+Alt+A）。在平铺式合成器上截图窗口可能显示异常，见「已知问题」。
+
 - 检查环境
   
     检查环境、以及 QQ 更新后修复是否仍然适用：
@@ -62,6 +66,7 @@ sudo make install PREFIX=/usr
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 屏幕共享 | xdg-desktop-portal 的 ScreenCast（niri、KDE、GNOME、wlroots 系都有对应后端）                                                                     |
 | 剪贴板   | 合成器支持 data-control（`ext-data-control-v1` 或 `wlr-data-control-unstable-v1`）：niri、KDE Plasma、Hyprland、sway、labwc 等；**GNOME 不支持** |
+| 截图     | 合成器支持 `wlr-screencopy-unstable-v1`：niri、Hyprland、sway、labwc 等；KDE、GNOME 下截图背景是黑的（不会闪退）                                   |
 | XWayland | 需要（QQ 的界面流程和剪贴板仍是 X11）                                                                                                            |
 
 ## 已知问题
@@ -76,6 +81,10 @@ Easy Effects 会把新出现的音频流移到它自己的设备上，这会触�
 ### 不要同时运行其它剪贴板同步工具
 
 本工具已经在 QQ 内部双向同步剪贴板，再运行 linuxqq-clipsync 之类的 X11↔Wayland 同步工具会重复同步。`--doctor` 会检查 linuxqq-clipsync。
+
+### 截图窗口在平铺式合成器上显示异常
+
+QQ 的截图窗口是按「放在桌面左上角、和整个桌面一样大」设计的，Wayland 下程序无法自己指定窗口位置和大小，平铺式合成器（如 niri）会把它当成普通窗口平铺，截到的画面按窗口宽度缩放后会重复铺好几份。可以改用合成器自带的截图（截完复制到剪贴板），再粘贴进 QQ。
 
 ### 全屏蓝色边框
 
@@ -116,17 +125,20 @@ grep -E 'qq-wl-portal|qq-clipbridge' "$XDG_RUNTIME_DIR/linuxqq-wayland-fix.log"
 | 日志里没有任何 `qq-wl-portal` / `qq-clipbridge`                          | QQ 没被注入（旧 QQ 没退干净），或 QQ 更新后改了实现，运行 `--doctor`                       |
 | `compositor supports neither …`                                          | 合成器不支持 data-control（如 GNOME），剪贴板修复不可用                                    |
 | `response=1`                                                             | 在 portal 选择框里点了取消                                                                 |
+| 按截图键 QQ 闪退，日志里有 `X_GetImage` 的 `BadMatch`                     | 截图修复没有生效（旧 QQ 没退干净，或没从「QQ（Wayland修复版）」打开）；正常时日志里有 `[qq-screenshot] captured …` |
 | 点「确定」开始共享时 QQ 闪退，崩溃记录里是 `signal: 5 (SIGTRAP)`         | 显示器坐标不从 0 开始时 QQ 算出空的窗口几何（#1）；本工具会自动处理，日志里应有 `empty-geometry fix: patched`，若是 `not patching` 说明 QQ 更新改了实现，请反馈 |
 
-排查时可以单独关掉某个修复：`QQ_WL_NATIVE_DISABLE=1`（屏幕共享）、`QQ_CLIPBOARD_FIX_DISABLE=1`（剪贴板）、`QQ_WL_GEOMETRY_FIX_DISABLE=1`（共享时防闪退）。
+排查时可以单独关掉某个修复：`QQ_WL_NATIVE_DISABLE=1`（屏幕共享）、`QQ_CLIPBOARD_FIX_DISABLE=1`（剪贴板）、`QQ_WL_GEOMETRY_FIX_DISABLE=1`（共享时防闪退）、`QQ_SCREENSHOT_FIX_DISABLE=1`（截图）。
 
 ## 工作原理
 
-启动器通过 `LD_PRELOAD` 向 QQ 注入两个小库，不修改任何 QQ 文件。
+启动器通过 `LD_PRELOAD` 向 QQ 注入三个小库，不修改任何 QQ 文件。
 
 **屏幕共享（`libqq-wl-portal.so`）**：QQ 的采集库 `broadcast-core.so` 其实自带一套 portal + PipeWire 的 Wayland 采集代码，但缺少「选择共享源」这一步，从未启用。本库只对 broadcast-core 发起的调用生效：让它走 Wayland 分支、在它连接 PipeWire 时自己走一遍 portal 选择流程，并修正两个 QQ 自身的 bug（声卡格式不是 s16le/f32le 时设备音频静默失败；共享内存帧忽略行跨度导致画面斜切）。另外，显示器坐标不从 0 开始时（如 Hyprland 单屏 `position=1920x0`），QQ 会给某个窗口算出空的几何并主动崩溃；本库在 QQ 主进程里把这处崩溃改为跳过该请求（#1，由 [@YoungJurry](https://github.com/YoungJurry) 最早定位）。
 
 **剪贴板（`libqq-clipbridge.so`）**：QQ 的剪贴板代码（`wrapper.node` 里的 `ClipBoardHelper`）只用 Xlib，所以 QQ 在 Wayland 下只读写 X11 剪贴板。本库在 QQ 进程里起一个后台线程，用自己的 X 连接和 data-control 协议双向桥接：QQ 复制时把格式提供给 Wayland，别的程序复制时接管 X11 剪贴板；数据都在粘贴时按需传输一次。
+
+**截图（`libqq-screenshot.so`）**：启动器为了让屏幕共享可用，给 QQ 的是 `XDG_SESSION_TYPE=x11`，于是 QQ 用 X11 的方式对根窗口 `XGetImage` 截全屏；而 Wayland 下的 XWayland 是 rootless 的，根窗口没有内容，这一步必然失败，QQ 不检查返回值就直接崩溃。本库拦截对根窗口的截取，改为通过 `wlr-screencopy` 截取各个 Wayland 输出，按 X 的显示器布局拼好交给 QQ；合成器不支持时给一张黑图，至少不再闪退。
 
 详细的逆向分析见 [docs/原理详解.md](docs/原理详解.md)。
 

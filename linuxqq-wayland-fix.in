@@ -1,5 +1,5 @@
 #!/bin/bash
-# linuxqq-wayland-fix @VERSION@ —— 修复 Linux QQ 在 Wayland 下的屏幕共享、共享电脑声音和剪贴板。
+# linuxqq-wayland-fix @VERSION@ —— 修复 Linux QQ 在 Wayland 下的屏幕共享、共享电脑声音、剪贴板和截图闪退。
 # https://github.com/SHORiN-KiWATA/linuxqq-wayland-fix
 #
 #   linuxqq-wayland-fix [QQ 的参数...]   启动 QQ（应用菜单里的「QQ（Wayland修复版）」就是它）
@@ -11,6 +11,7 @@
 #   QQ_WAYLAND_FIX_LOG        日志文件（默认 $XDG_RUNTIME_DIR/linuxqq-wayland-fix.log）
 #   QQ_WL_NATIVE_DISABLE=1    关闭屏幕共享修复（排查问题用）
 #   QQ_CLIPBOARD_FIX_DISABLE=1 关闭剪贴板修复（排查问题用）
+#   QQ_SCREENSHOT_FIX_DISABLE=1 关闭截图防闪退（排查问题用）
 
 set -u
 
@@ -18,6 +19,7 @@ VERSION="@VERSION@"
 LIBDIR="@LIBEXECDIR@"
 SCREENSHARE_LIB="$LIBDIR/libqq-wl-portal.so"
 CLIPBOARD_LIB="$LIBDIR/libqq-clipbridge.so"
+SCREENSHOT_LIB="$LIBDIR/libqq-screenshot.so"
 LOG="${QQ_WAYLAND_FIX_LOG:-${XDG_RUNTIME_DIR:-/tmp}/linuxqq-wayland-fix.log}"
 QQ_CRASH_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/QQ/crash_files"
 CRASH_KEEP="${XDG_CACHE_HOME:-$HOME/.cache}/linuxqq-wayland-fix/crash"
@@ -82,6 +84,7 @@ doctor() {
     [[ -n "$qq" ]] && pass "QQ 启动方式: $qq" || bad "找不到 QQ（linuxqq 或 /opt/QQ/qq），可用 QQ_WAYLAND_FIX_QQ 指定"
     [[ -r "$SCREENSHARE_LIB" ]] && pass "屏幕共享修复: $SCREENSHARE_LIB" || bad "找不到 $SCREENSHARE_LIB"
     [[ -r "$CLIPBOARD_LIB" ]] && pass "剪贴板修复: $CLIPBOARD_LIB" || bad "找不到 $CLIPBOARD_LIB"
+    [[ -r "$SCREENSHOT_LIB" ]] && pass "截图防闪退: $SCREENSHOT_LIB" || bad "找不到 $SCREENSHOT_LIB"
     [[ -n "${WAYLAND_DISPLAY:-}" ]] && pass "Wayland 会话: $WAYLAND_DISPLAY" || note "WAYLAND_DISPLAY 为空，不在 Wayland 会话里？"
     [[ -n "${DISPLAY:-}" ]] && pass "XWayland: $DISPLAY" || bad "DISPLAY 为空：QQ 的界面与剪贴板仍需要 XWayland"
 
@@ -208,7 +211,7 @@ if [[ -z "$QQ" ]]; then
 fi
 
 preload=""
-for lib in "$SCREENSHARE_LIB" "$CLIPBOARD_LIB"; do
+for lib in "$SCREENSHARE_LIB" "$CLIPBOARD_LIB" "$SCREENSHOT_LIB"; do
     [[ -r "$lib" ]] && preload="${preload:+$preload:}$lib"
 done
 export LD_PRELOAD="$preload${LD_PRELOAD:+:$LD_PRELOAD}"
