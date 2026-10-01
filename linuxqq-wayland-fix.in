@@ -109,6 +109,17 @@ doctor() {
             && pass "共享电脑声音：仍通过 pa_context_get_sink_info_by_name 查询格式" \
             || note "共享电脑声音：查询方式变了，可能无声"
     fi
+    # 窗口几何为空时的崩溃检查（见 qq-wl-portal.c「6.」）：特征码必须恰好出现一次
+    local qqbin=/opt/QQ/qq offs
+    if [[ -f "$qqbin" ]]; then
+        offs=$(LC_ALL=C grep -obaF $'\x44\x8b\x7e\x08\x45\x85\xff\x74' "$qqbin" 2>/dev/null | cut -d: -f1)
+        if [[ "$offs" =~ ^[0-9]+$ ]] &&
+           [[ $(od -An -tx1 -j $((offs + 9)) -N 8 "$qqbin" | tr -d ' \n') == 448b660c4585e474 ]]; then
+            pass "共享时防闪退：找到窗口几何检查"
+        else
+            note "共享时防闪退：QQ 改了实现，显示器坐标不从 0 开始时共享可能闪退（issue #1）"
+        fi
+    fi
     if [[ -z "$wrapper" ]]; then
         note "找不到 wrapper.node，跳过剪贴板检查"
     elif grep -aq XSetSelectionOwner "$wrapper"; then
@@ -152,14 +163,6 @@ doctor() {
     done
     if systemctl --user is-active -q linuxqq-clipsync 2>/dev/null || pgrep -f "(^|/)linuxqq-clipsync( |$)" >/dev/null; then
         note "linuxqq-clipsync 正在运行：本工具已包含剪贴板修复，同时运行会重复同步。请停用：systemctl --user disable --now linuxqq-clipsync"
-    fi
-    if command -v hyprctl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-        local mon_cnt mon_x
-        mon_cnt=$(hyprctl monitors -j 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
-        mon_x=$(hyprctl monitors -j 2>/dev/null | jq -r '.[0].x // 0' 2>/dev/null || echo 0)
-        if [[ "$mon_cnt" -eq 1 && "$mon_x" -ne 0 ]]; then
-            note "检测到单屏但显示器起始坐标非 0（X=$mon_x）：已由注入库防护，建议将单屏位置设为 0x0 保持最佳对齐"
-        fi
     fi
 
     echo

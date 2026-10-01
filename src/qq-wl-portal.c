@@ -24,17 +24,22 @@
  *   3. 包装函数里自己走一遍 xdg-desktop-portal ScreenCast 流程（会弹出合成器的
  *      选择框），把真正的 PipeWire fd 和 node id 换进去；断开时关闭 portal 会话。
  *
+ * 另外在 QQ 主进程里去掉一处 Chromium 的崩溃检查（窗口几何为空时闪退，issue #1），
+ * 见「6. 窗口几何为空时不再闪退」。
+ *
  * 用法：LD_PRELOAD=libqq-wl-portal.so XDG_SESSION_TYPE=x11 linuxqq ...
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <gio/gio.h>
 #include <gio/gunixfdlist.h>
 #include <pthread.h>
 #include <pipewire/stream.h>
 #include <pulse/introspect.h>
 #include <spa/param/video/format-utils.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -649,10 +654,6 @@ static int wrap_queue(struct pw_stream *stream, struct pw_buffer *b)
 typedef void *(*dlsym_fn)(void *, const char *);
 
 /* 汇编蹦床（dlsym_trampoline.S）直接跳到这里，所以不能是 static。 */
-#if defined(__x86_64__)
-static void fix_zero_size_assertion(void);
-#endif
-
 __attribute__((visibility("hidden"))) dlsym_fn qqwl_real_dlsym;
 
 static void resolve_dlsym(void)
@@ -667,9 +668,6 @@ static void init_dlsym(void)
 {
     if (!qqwl_real_dlsym)
         resolve_dlsym();
-#if defined(__x86_64__)
-    fix_zero_size_assertion();
-#endif
 }
 
 static void *intercept(void *handle, const char *name)
@@ -857,82 +855,135 @@ pa_operation *pa_context_get_source_info_by_name(pa_context *c,
     return real(c, name, cb, userdata);
 }
 
-/* ---------- 6. 修复屏幕坐标异常时 QQ 主进程零尺寸断言崩溃 ---------- */
+/* ---------- 6. 窗口几何为空时不再闪退 ---------- */
 
+/*
+ * QQ 主程序（Chromium 的 Wayland 后端）在发 xdg_surface.set_window_geometry 之前
+ * 检查宽、高都不为 0，否则 int3; ud2 主动崩溃（issue #1）。显示器坐标不从 0 开始时
+ * （如 Hyprland 单屏 position=1920x0），QQ 给共享相关的某个窗口算出的几何为空，
+ * 点「确定」开始共享就会闪退。最早由 @YoungJurry 在 #2 中定位。
+ *
+ * 不能只去掉检查：把 0 尺寸发给合成器，wlroots 和 niri 都会按协议报错并断开 QQ。
+ * 这里改的是崩溃桩：几何为空时直接返回，不发这个请求，合成器按窗口内容决定大小。
+ *
+ * QQ 3.2.34-53644 里这个函数在 qq+0x39f81c0：
+ *
+ *   55 48 89 e5 41 57 41 56 41 55 41 54 53 50   push rbp … push rbx; push rax
+ *   44 8b 7e 08 45 85 ff 74 xx                  width  = rect->w; je crash
+ *   44 8b 66 0c 45 85 e4 74 xx                  height = rect->h; je crash
+ *   …                                           wl_proxy_marshal_flags(…, 3, …, x, y, w, h)
+ *   48 83 c4 28 5b 41 5c 41 5d 41 5e 41 5f 5d c3  add rsp; pop ×6; ret
+ *   crash: cc 0f 0b cc cc cc …                  int3; ud2; 填充
+ *
+ * 崩溃桩改写为 48 83 c4 08（add $8,%rsp，弹掉 push rax）+ eb ef（jmp 到 pop rbx），
+ * 正好落在函数自带的填充里。只在主进程做；任何一处字节对不上（QQ 更新了）就不动。
+ * QQ_WL_GEOMETRY_FIX_DISABLE=1 可以单独关掉。
+ */
 #if defined(__x86_64__)
-static int patch_zero_size_cb(struct dl_phdr_info *info, size_t size, void *data)
+static const unsigned char geom_prologue[] = {
+    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x50,
+};
+static const unsigned char geom_check_w[] = { 0x44, 0x8b, 0x7e, 0x08, 0x45, 0x85, 0xff, 0x74 };
+static const unsigned char geom_check_h[] = { 0x44, 0x8b, 0x66, 0x0c, 0x45, 0x85, 0xe4, 0x74 };
+static const unsigned char geom_epilogue[] = {
+    0x5b, 0x41, 0x5c, 0x41, 0x5d, 0x41, 0x5e, 0x41, 0x5f, 0x5d, 0xc3,
+};
+static const unsigned char geom_stub[] = { 0xcc, 0x0f, 0x0b, 0xcc, 0xcc, 0xcc };
+static const unsigned char geom_return[] = { 0x48, 0x83, 0xc4, 0x08, 0xeb, 0xef };
+
+struct geom_scan {
+    uintptr_t base;
+    unsigned char *stub;
+    int found;
+};
+
+static void geom_scan_segment(struct geom_scan *s, unsigned char *seg, size_t len)
 {
-    (void)size;
-    (void)data;
+    unsigned char *end = seg + len, *p = seg;
 
-    /* 仅检查主可执行程序（qq） */
-    if (info->dlpi_name && *info->dlpi_name) {
-        const char *base = strrchr(info->dlpi_name, '/');
-        const char *name = base ? base + 1 : info->dlpi_name;
-        if (strcmp(name, "qq") != 0)
-            return 0;
-    }
+    while (p < end && (p = memmem(p, end - p, geom_check_w, sizeof geom_check_w))) {
+        unsigned char *crash = p + 9 + (signed char)p[8];
 
-    long page_size = sysconf(_SC_PAGESIZE);
-    if (page_size <= 0)
-        page_size = 4096;
-
-    for (int i = 0; i < info->dlpi_phnum; i++) {
-        const ElfW(Phdr) *phdr = &info->dlpi_phdr[i];
-        if (phdr->p_type != PT_LOAD || !(phdr->p_flags & PF_X))
-            continue;
-
-        uintptr_t seg_start = info->dlpi_addr + phdr->p_vaddr;
-        size_t seg_len = phdr->p_memsz;
-        const uint8_t *p = (const uint8_t *)seg_start;
-
-        /* 特征码：
-         * 44 8b 7e 08       mov 0x8(%rsi), %r15d
-         * 45 85 ff          test %r15d, %r15d
-         * 74 ??             je crash (39f8225: int3; ud2)
-         * 44 8b 66 0c       mov 0xc(%rsi), %r12d
-         * 45 85 e4          test %r12d, %r12d
-         * 74 ??             je crash
-         */
-        for (size_t off = 0; off + 18 <= seg_len; off++) {
-            if (p[off] == 0x44 && p[off+1] == 0x8b && p[off+2] == 0x7e && p[off+3] == 0x08 &&
-                p[off+4] == 0x45 && p[off+5] == 0x85 && p[off+6] == 0xff && p[off+7] == 0x74 &&
-                p[off+9] == 0x44 && p[off+10] == 0x8b && p[off+11] == 0x66 && p[off+12] == 0x0c &&
-                p[off+13] == 0x45 && p[off+14] == 0x85 && p[off+15] == 0xe4 && p[off+16] == 0x74) {
-
-                uintptr_t patch_addr = (uintptr_t)&p[off];
-                uintptr_t page_start = patch_addr & ~(uintptr_t)(page_size - 1);
-                size_t map_len = (patch_addr + 18) - page_start;
-
-                if (mprotect((void *)page_start, map_len, PROT_READ | PROT_WRITE | PROT_EXEC) == 0) {
-                    uint8_t *writable = (uint8_t *)patch_addr;
-                    writable[7] = 0x90;  /* nop */
-                    writable[8] = 0x90;  /* nop */
-                    writable[16] = 0x90; /* nop */
-                    writable[17] = 0x90; /* nop */
-                    mprotect((void *)page_start, map_len, PROT_READ | PROT_EXEC);
-                    LOG("patched QQ main zero-size screen assertion at %p", (long)getpid(), (void *)patch_addr);
-                    return 1;
-                }
-            }
+        if (p - seg >= (ptrdiff_t)sizeof geom_prologue && end - p >= 18 &&
+            !memcmp(p - sizeof geom_prologue, geom_prologue, sizeof geom_prologue) &&
+            !memcmp(p + 9, geom_check_h, sizeof geom_check_h) &&
+            p + 18 + (signed char)p[17] == crash &&
+            crash - seg >= (ptrdiff_t)sizeof geom_epilogue &&
+            end - crash >= (ptrdiff_t)sizeof geom_stub &&
+            !memcmp(crash - sizeof geom_epilogue, geom_epilogue, sizeof geom_epilogue) &&
+            !memcmp(crash, geom_stub, sizeof geom_stub)) {
+            s->stub = crash;
+            s->found++;
         }
+        p++;
     }
-    return 0;
 }
 
-static void fix_zero_size_assertion(void)
+static int geom_scan_main(struct dl_phdr_info *info, size_t size, void *data)
 {
-    /* 确认是 qq 进程 */
-    char exe[256];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    struct geom_scan *s = data;
+
+    (void)size;
+    s->base = info->dlpi_addr;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+        if (ph->p_type == PT_LOAD && (ph->p_flags & PF_X))
+            geom_scan_segment(s, (unsigned char *)(info->dlpi_addr + ph->p_vaddr), ph->p_memsz);
+    }
+    return 1; /* 第一项就是主程序，不看其它库 */
+}
+
+/* 只在 QQ 的主进程（浏览器进程）里做：它才有 Wayland 窗口；子进程的命令行带 --type=。 */
+static int is_qq_main_process(void)
+{
+    char buf[4096];
+    ssize_t n;
+    int fd = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC);
+
+    if (fd < 0)
+        return 0;
+    n = read(fd, buf, sizeof buf - 1);
+    close(fd);
     if (n <= 0)
-        return;
-    exe[n] = '\0';
-    const char *base = strrchr(exe, '/');
-    if (!base || strcmp(base + 1, "qq") != 0)
+        return 0;
+    buf[n] = '\0';
+
+    const char *base = strrchr(buf, '/');
+    if (strcmp(base ? base + 1 : buf, "qq"))
+        return 0;
+    for (const char *a = buf; a < buf + n; a += strlen(a) + 1)
+        if (!strncmp(a, "--type=", 7))
+            return 0;
+    return 1;
+}
+
+__attribute__((constructor))
+static void geometry_fix_init(void)
+{
+    const char *v = lookup_env("QQ_WL_GEOMETRY_FIX_DISABLE");
+    struct geom_scan s = { 0 };
+
+    if (!enabled() || (v && *v && strcmp(v, "0")) || !is_qq_main_process())
         return;
 
-    dl_iterate_phdr(patch_zero_size_cb, NULL);
+    dl_iterate_phdr(geom_scan_main, &s);
+    if (s.found != 1) {
+        LOG("empty-geometry fix: crash check found %d times, not patching (QQ changed?)",
+            (long)getpid(), s.found);
+        return;
+    }
+
+    long pg = sysconf(_SC_PAGESIZE);
+    uintptr_t start = (uintptr_t)s.stub & ~(uintptr_t)(pg - 1);
+    size_t len = (uintptr_t)s.stub + sizeof geom_return - start;
+
+    if (mprotect((void *)start, len, PROT_READ | PROT_WRITE | PROT_EXEC)) {
+        LOG("empty-geometry fix: mprotect failed: %s", (long)getpid(), strerror(errno));
+        return;
+    }
+    memcpy(s.stub, geom_return, sizeof geom_return);
+    mprotect((void *)start, len, PROT_READ | PROT_EXEC);
+    LOG("empty-geometry fix: patched crash stub at qq+%#lx",
+        (long)getpid(), (unsigned long)((uintptr_t)s.stub - s.base));
 }
 #endif
-
