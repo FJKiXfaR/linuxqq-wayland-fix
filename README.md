@@ -45,15 +45,17 @@ sudo make install PREFIX=/usr
 ## 使用
 
 1. **完全退出 QQ**（包括托盘）。
-2. 从应用菜单启动「**QQ（Wayland 屏幕共享）**」，或在终端运行 `qq-wl-native`。
+2. 从应用菜单启动「**QQ（屏幕共享修复）**」，或在终端运行 `linuxqq-wayland-native-screenshare-fix`。
 3. 发起共享 → QQ 自己的选窗里随便选「桌面1」→ 点「确定」。
 4. 合成器弹出 portal 选择框，在**这里**选真正要共享的屏幕或窗口。
 5. 需要共享电脑声音时，点共享工具栏上的「共享设备音频」。
 
+QQ 崩溃时，崩溃记录（Bugly 的 `tomb_*.txt`）会被保存到 `~/.local/state/linuxqq-wayland-native-screenshare-fix/crash/`（原位置会被 `linuxqq` 启动脚本清空），反馈问题时请附上。
+
 检查环境与当前 QQ 版本是否兼容：
 
 ```bash
-qq-wl-native --doctor
+linuxqq-wayland-native-screenshare-fix --doctor
 ```
 
 ## 必读：已知问题与设置
@@ -65,7 +67,11 @@ Easy Effects 会把新出现的音频流移到它自己的设备上，这会触�
 - Easy Effects →「输入」和「输出」页 → 排除的应用 → 都加上 **`TRAE`**（QQ 音频流的应用名）；
 - QQ「设置 → 音视频通话」里把麦克风选成 **Easy Effects Source**，麦克风照样经过 Easy Effects 处理。
 
-`qq-wl-native --doctor` 会检查这一项。
+`linuxqq-wayland-native-screenshare-fix --doctor` 会检查这一项。
+
+### niri 上的 Linux QQ 看别人的共享画面花屏
+
+在 niri 上用 Linux QQ **观看**共享（不论对方用什么方式共享）时，画面可能缩在一角、满是竖条纹；同一路共享在手机 QQ、Windows QQ 上看是正常的。这是 Linux QQ 接收端的显示问题，与发送端无关，暂未解决。
 
 ### 全屏蓝色边框
 
@@ -81,10 +87,10 @@ QQ 的界面流程仍以为自己在 X11 会话中（选窗缩略图等），所
 
 ## 排错
 
-日志：`$XDG_RUNTIME_DIR/qq-wl-native.log`
+日志：`$XDG_RUNTIME_DIR/linuxqq-wayland-native-screenshare-fix.log`
 
 ```bash
-grep qq-wl-portal "$XDG_RUNTIME_DIR/qq-wl-native.log"
+grep qq-wl-portal "$XDG_RUNTIME_DIR/linuxqq-wayland-native-screenshare-fix.log"
 ```
 
 正常的输出：
@@ -100,12 +106,12 @@ device audio: report sample format 7 as float32le (5) to broadcast-core   ← �
 
 | 症状 | 原因 / 办法 |
 | --- | --- |
-| 提示「Wayland桌面环境暂时无法使用屏幕分享功能」 | 没有用 `qq-wl-native` 启动 |
+| 提示「Wayland桌面环境暂时无法使用屏幕分享功能」 | 没有用 `linuxqq-wayland-native-screenshare-fix` 启动 |
 | 点共享没反应，`coredumpctl` 有 QQ 的 SIGTRAP，栈里有 `PulseAudioWrapper` | Easy Effects，见上文 |
 | 点「确定」没反应，栈里有 `ZSTD_` / `libgallium` | QQ 自带的 zstd 与 Mesa 冲突；启动脚本已设置 `MESA_SHADER_CACHE_DISABLE=true`，请确认没被覆盖 |
 | 日志里一行 `qq-wl-portal` 都没有 | QQ 没被注入（旧 QQ 没退干净），或 QQ 更新后改了实现，运行 `--doctor` |
 | `response=1` | 在 portal 选择框里点了取消 |
-| 想确认是不是本项目的问题 | `QQ_WL_NATIVE_DISABLE=1 qq-wl-native`：注入但不做任何拦截 |
+| 想确认是不是本项目的问题 | `QQ_WL_NATIVE_DISABLE=1 linuxqq-wayland-native-screenshare-fix`：注入但不做任何拦截 |
 
 ## 工作原理
 
@@ -133,7 +139,7 @@ Wayland 分支需要的 fd 和 node id 本该由 QQ 的 `CaptureSelector`（调�
 
 ## QQ 更新后
 
-QQ 会自动热更新到 `~/.config/QQ/versions/`。本项目不依赖任何地址或偏移，只依赖：broadcast-core 用 `XDG_SESSION_TYPE` 判断 Wayland、按名字 `dlsym` 获取 PipeWire 函数、用 `pa_context_get_sink_info_by_name` 查设备格式。此外依赖 broadcast-core 按名字获取 `pw_stream_add_listener` / `dequeue_buffer` / `queue_buffer`。更新后如果出问题，先运行 `qq-wl-native --doctor`，它会逐项检查这些前提。
+QQ 会自动热更新到 `~/.config/QQ/versions/`。本项目不依赖任何地址或偏移，只依赖：broadcast-core 用 `XDG_SESSION_TYPE` 判断 Wayland、按名字 `dlsym` 获取 PipeWire 函数、用 `pa_context_get_sink_info_by_name` 查设备格式。此外依赖 broadcast-core 按名字获取 `pw_stream_add_listener` / `dequeue_buffer` / `queue_buffer`。更新后如果出问题，先运行 `linuxqq-wayland-native-screenshare-fix --doctor`，它会逐项检查这些前提。
 
 ## 致谢
 

@@ -21,10 +21,11 @@ PKG_CONFIG ?= pkg-config
 DEP_CFLAGS := $(shell $(PKG_CONFIG) --cflags gio-unix-2.0 libpulse libpipewire-0.3)
 DEP_LIBS   := $(shell $(PKG_CONFIG) --libs gio-unix-2.0)
 
+CMD        := linuxqq-wayland-native-screenshare-fix
 LIB        := libqq-wl-portal.so
 OBJS       := src/qq-wl-portal.o src/dlsym_trampoline.o
 
-all: $(LIB) qq-wl-native
+all: $(LIB) $(CMD)
 
 src/qq-wl-portal.o: src/qq-wl-portal.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -Wall -Wextra -Wno-nonnull-compare \
@@ -37,19 +38,19 @@ src/dlsym_trampoline.o: src/dlsym_trampoline.S
 $(LIB): $(OBJS)
 	$(CC) $(LDFLAGS) -shared -Wl,-z,defs -o $@ $(OBJS) $(DEP_LIBS) -ldl -Wl,--allow-shlib-undefined
 
-qq-wl-native: qq-wl-native.in
+$(CMD): $(CMD).in
 	sed -e 's|@LIBEXECDIR@|$(LIBEXECDIR)|g' -e 's|@VERSION@|$(VERSION)|g' $< > $@
 	chmod +x $@
 
 install: all
 	install -Dm755 $(LIB)               $(DESTDIR)$(LIBEXECDIR)/$(LIB)
-	install -Dm755 qq-wl-native         $(DESTDIR)$(BINDIR)/qq-wl-native
-	install -Dm644 qq-wl-native.desktop $(DESTDIR)$(DATADIR)/applications/qq-wl-native.desktop
+	install -Dm755 $(CMD)               $(DESTDIR)$(BINDIR)/$(CMD)
+	install -Dm644 $(CMD).desktop       $(DESTDIR)$(DATADIR)/applications/$(CMD).desktop
 	install -Dm644 README.md            $(DESTDIR)$(DOCDIR)/README.md
 	install -Dm644 LICENSE              $(DESTDIR)$(DATADIR)/licenses/$(NAME)/LICENSE
 
 clean:
-	rm -f $(OBJS) $(LIB) qq-wl-native
+	rm -f $(OBJS) $(LIB) $(CMD)
 
 .PHONY: all install clean
 

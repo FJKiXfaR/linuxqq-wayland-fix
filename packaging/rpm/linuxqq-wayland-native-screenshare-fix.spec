@@ -20,7 +20,7 @@ Recommends:     xdg-desktop-portal
 %description
 Lets Linux QQ use its own built-in xdg-desktop-portal + PipeWire screen capture
 path on Wayland, and fixes device-audio sharing on sound cards whose native
-sample format is not s16le/f32le. Start QQ with qq-wl-native.
+sample format is not s16le/f32le. Start QQ with linuxqq-wayland-native-screenshare-fix.
 
 %prep
 %autosetup
@@ -35,9 +35,9 @@ sample format is not s16le/f32le. Start QQ with qq-wl-native.
 %files
 %license %{_datadir}/licenses/%{srcname}/LICENSE
 %doc %{_docdir}/%{srcname}/README.md
-%{_bindir}/qq-wl-native
+%{_bindir}/linuxqq-wayland-native-screenshare-fix
 %{_libdir}/%{srcname}/
-%{_datadir}/applications/qq-wl-native.desktop
+%{_datadir}/applications/linuxqq-wayland-native-screenshare-fix.desktop
 
 %changelog
 * Thu Oct 01 2026 Shorin <shorin@example.com> - %{version}-1

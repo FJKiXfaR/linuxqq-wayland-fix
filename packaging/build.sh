@@ -31,7 +31,7 @@ Homepage: https://github.com/SHORiN-KiWATA/linuxqq-wayland-screenshare-fix
 Description: Fix Linux QQ screen sharing on Wayland
  Lets Linux QQ use its own built-in xdg-desktop-portal + PipeWire screen
  capture path on Wayland, and fixes device-audio sharing on sound cards
- whose native sample format is not s16le/f32le. Start QQ with qq-wl-native.
+ whose native sample format is not s16le/f32le. Start QQ with linuxqq-wayland-native-screenshare-fix.
 CTRL
     dpkg-deb --root-owner-group --build "$stage" "$dist/${pkg}_${version}-1~${label}_${arch}.deb"
     ;;

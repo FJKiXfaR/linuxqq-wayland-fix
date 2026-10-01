@@ -1,22 +1,37 @@
 #!/bin/bash
-# qq-wl-native @VERSION@ —— 让 Linux QQ 在 Wayland 下用自带的 portal + PipeWire 路径共享屏幕。
+# linuxqq-wayland-native-screenshare-fix @VERSION@ —— 让 Linux QQ 在 Wayland 下用自带的 portal + PipeWire 路径共享屏幕。
 # https://github.com/SHORiN-KiWATA/linuxqq-wayland-screenshare-fix
 #
-#   qq-wl-native [QQ 的参数...]   启动 QQ
-#   qq-wl-native --doctor         检查环境与当前 QQ 版本是否兼容
-#   qq-wl-native --version
+#   linuxqq-wayland-native-screenshare-fix [QQ 的参数...]   启动 QQ
+#   linuxqq-wayland-native-screenshare-fix --doctor         检查环境与当前 QQ 版本是否兼容
+#   linuxqq-wayland-native-screenshare-fix --version
 #
 # 环境变量：
 #   QQ_WL_NATIVE_LIB       注入库路径（默认 @LIBEXECDIR@/libqq-wl-portal.so）
 #   QQ_WL_NATIVE_QQ        QQ 可执行文件（默认先找 PATH 里的 linuxqq，再找 /opt/QQ/qq）
-#   QQ_WL_NATIVE_LOG       日志文件（默认 $XDG_RUNTIME_DIR/qq-wl-native.log）
+#   QQ_WL_NATIVE_LOG       日志文件（默认 $XDG_RUNTIME_DIR/linuxqq-wayland-native-screenshare-fix.log）
 #   QQ_WL_NATIVE_DISABLE=1 不做任何拦截（排查问题用）
 
 set -u
 
 VERSION="@VERSION@"
 LIB="${QQ_WL_NATIVE_LIB:-@LIBEXECDIR@/libqq-wl-portal.so}"
-LOG="${QQ_WL_NATIVE_LOG:-${XDG_RUNTIME_DIR:-/tmp}/qq-wl-native.log}"
+LOG="${QQ_WL_NATIVE_LOG:-${XDG_RUNTIME_DIR:-/tmp}/linuxqq-wayland-native-screenshare-fix.log}"
+QQ_CRASH_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/QQ/crash_files"
+CRASH_KEEP="${XDG_STATE_HOME:-$HOME/.local/state}/linuxqq-wayland-native-screenshare-fix/crash"
+
+# QQ 崩溃时 Bugly 把调用栈写进 crash_files/tomb_*.txt，但 linuxqq 启动脚本每次都会清空这个目录。
+# 启动前把它们挪到自己的目录里保存，--doctor 会列出最近的几次。
+keep_crash_records() {
+    local f
+    compgen -G "$QQ_CRASH_DIR/tomb_*.txt" >/dev/null || return 0
+    mkdir -p "$CRASH_KEEP" || return 0
+    for f in "$QQ_CRASH_DIR"/tomb_*.txt; do
+        cp -p "$f" "$CRASH_KEEP/" 2>/dev/null
+    done
+    # 只保留最近 20 份
+    ls -1t "$CRASH_KEEP"/tomb_*.txt 2>/dev/null | tail -n +21 | xargs -r rm -f
+}
 
 find_qq() {
     if [[ -n "${QQ_WL_NATIVE_QQ:-}" ]]; then
@@ -48,7 +63,7 @@ doctor() {
     note() { printf '  \e[33m!\e[0m %s\n' "$*"; warn=$((warn + 1)); }
     bad()  { printf '  \e[31m✗\e[0m %s\n' "$*"; fail=$((fail + 1)); }
 
-    echo "qq-wl-native $VERSION 自检"
+    echo "linuxqq-wayland-native-screenshare-fix $VERSION 自检"
     echo
     echo "[基础]"
     local qq; qq=$(find_qq)
@@ -119,7 +134,20 @@ doctor() {
     elif tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -q 'libqq-wl-portal.so'; then
         pass "QQ（PID $pid）已注入"
     else
-        bad "QQ（PID $pid）没有注入：请完全退出 QQ（含托盘），再用 qq-wl-native 启动"
+        bad "QQ（PID $pid）没有注入：请完全退出 QQ（含托盘），再用 linuxqq-wayland-native-screenshare-fix 启动"
+    fi
+
+    echo
+    echo "[最近的 QQ 崩溃记录]"
+    keep_crash_records
+    local t
+    t=$(ls -1t "$CRASH_KEEP"/tomb_*.txt 2>/dev/null | head -3)
+    if [[ -z "$t" ]]; then
+        pass "没有崩溃记录"
+    else
+        while read -r f; do
+            note "$(date -r "$f" '+%F %T')  $f"
+        done <<< "$t"
     fi
 
     echo
@@ -129,17 +157,17 @@ doctor() {
 
 case "${1:-}" in
     --doctor) doctor; exit $? ;;
-    --version) echo "qq-wl-native $VERSION"; exit 0 ;;
+    --version) echo "linuxqq-wayland-native-screenshare-fix $VERSION"; exit 0 ;;
     --help|-h) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 QQ=$(find_qq)
 if [[ -z "$QQ" ]]; then
-    echo "qq-wl-native: 找不到 QQ（linuxqq 或 /opt/QQ/qq），可用 QQ_WL_NATIVE_QQ 指定" >&2
+    echo "linuxqq-wayland-native-screenshare-fix: 找不到 QQ（linuxqq 或 /opt/QQ/qq），可用 QQ_WL_NATIVE_QQ 指定" >&2
     exit 1
 fi
 if [[ ! -r "$LIB" ]]; then
-    echo "qq-wl-native: 找不到注入库 $LIB" >&2
+    echo "linuxqq-wayland-native-screenshare-fix: 找不到注入库 $LIB" >&2
     exit 1
 fi
 
@@ -151,5 +179,6 @@ export LD_PRELOAD="$LIB${LD_PRELOAD:+:$LD_PRELOAD}"
 export XDG_SESSION_TYPE=x11
 export MESA_SHADER_CACHE_DISABLE="${MESA_SHADER_CACHE_DISABLE:-true}"
 
-{ echo "=== qq-wl-native $VERSION $(date '+%F %T') $QQ $*"; } >"$LOG" 2>/dev/null || LOG=/dev/null
+keep_crash_records
+{ echo "=== linuxqq-wayland-native-screenshare-fix $VERSION $(date '+%F %T') $QQ $*"; } >"$LOG" 2>/dev/null || LOG=/dev/null
 exec "$QQ" --ozone-platform=wayland "$@" >>"$LOG" 2>&1

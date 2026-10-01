@@ -1,6 +1,6 @@
 *.o
 *.so
-/qq-wl-native
+/linuxqq-wayland-native-screenshare-fix
 /dist/
 /packaging/arch/src/
 /packaging/arch/pkg/
