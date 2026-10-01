@@ -22,7 +22,7 @@ jobs:
           - { label: fedora43,    image: 'fedora:43',        kind: rpm }
           - { label: archlinux,   image: 'archlinux:latest', kind: arch }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: sh packaging/ci-deps.sh ${{ matrix.kind }}
@@ -40,7 +40,7 @@ jobs:
         shell: bash
         run: bash packaging/build.sh ${{ matrix.kind }} ${{ matrix.label }} "$VERSION"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pkg-${{ matrix.label }}
           path: dist/*
@@ -50,11 +50,11 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
