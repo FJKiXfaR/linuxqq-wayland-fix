@@ -8,10 +8,9 @@ pkgdesc="修复 Linux QQ 在 Wayland 下的屏幕共享（启用 QQ 自带的 po
 arch=('x86_64' 'aarch64')
 url="https://github.com/SHORiN-KiWATA/linuxqq-wayland-screenshare-fix"
 license=('MIT')
-depends=('glibc' 'glib2')
+depends=('glibc' 'glib2' 'linuxqq')
 makedepends=('libpulse' 'libpipewire' 'pkgconf')
-optdepends=('linuxqq: QQ 本体'
-            'xdg-desktop-portal: 屏幕录制（需要合成器对应的后端）')
+optdepends=('xdg-desktop-portal: 屏幕录制（需要合成器对应的后端）')
 
 _root="$startdir/../.."
 

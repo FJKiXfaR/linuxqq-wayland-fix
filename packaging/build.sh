@@ -46,7 +46,7 @@ rpm)
     ;;
 arch)
     chown -R builder: "$root"
-    su builder -c "cd '$root/packaging/arch' && QQWL_VERSION='$version' makepkg -f --noconfirm"
+    su builder -c "cd '$root/packaging/arch' && QQWL_VERSION='$version' makepkg -f -d --noconfirm"
     find packaging/arch -maxdepth 1 -name '*.pkg.tar.zst' ! -name '*-debug-*' -exec cp {} "$dist/" \;
     ;;
 *)

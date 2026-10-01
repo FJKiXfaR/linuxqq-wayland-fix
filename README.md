@@ -22,6 +22,8 @@
 paru -S linuxqq-wayland-native-screenshare-fix-git
 ```
 
+依赖 `linuxqq`，AUR 上提供它的包（`linuxqq`、`linuxqq-nt-bwrap`、`linuxqq-appimage` 等）任选其一。目前只在 `linuxqq` 上实测过。
+
 ### Debian 12+ / Ubuntu 24.04+ / Fedora 43+ / Arch
 
 从 [Releases](https://github.com/SHORiN-KiWATA/linuxqq-wayland-screenshare-fix/releases) 下载对应发行版的包：
@@ -50,7 +52,7 @@ sudo make install PREFIX=/usr
 4. 合成器弹出 portal 选择框，在**这里**选真正要共享的屏幕或窗口。
 5. 需要共享电脑声音时，点共享工具栏上的「共享设备音频」。
 
-QQ 崩溃时，崩溃记录（Bugly 的 `tomb_*.txt`）会被保存到 `~/.local/state/linuxqq-wayland-native-screenshare-fix/crash/`（原位置会被 `linuxqq` 启动脚本清空），反馈问题时请附上。
+QQ 崩溃时，崩溃记录（Bugly 的 `tomb_*.txt`）会被保存到 `~/.cache/linuxqq-wayland-native-screenshare-fix/crash/`（原位置会被 `linuxqq` 启动脚本清空），反馈问题时请附上。
 
 检查环境与当前 QQ 版本是否兼容：
 
@@ -71,7 +73,7 @@ Easy Effects 会把新出现的音频流移到它自己的设备上，这会触�
 
 ### niri 上的 Linux QQ 看别人的共享画面花屏
 
-在 niri 上用 Linux QQ **观看**共享（不论对方用什么方式共享）时，画面可能缩在一角、满是竖条纹；同一路共享在手机 QQ、Windows QQ 上看是正常的。这是 Linux QQ 接收端的显示问题，与发送端无关，暂未解决。
+在 niri 上用 Linux QQ 3.2.34 **观看**共享时，画面可能缩在一角、满是竖条纹；同一路共享在手机 QQ、Windows QQ 上看是正常的。不注入本项目的原版 QQ 也一样，有用户反馈 niri + QQ 3.2.32 观看正常，推测是 QQ 3.2.34 接收端的问题，与本项目和发送端无关。
 
 ### 全屏蓝色边框
 

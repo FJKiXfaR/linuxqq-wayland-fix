@@ -18,7 +18,7 @@ VERSION="@VERSION@"
 LIB="${QQ_WL_NATIVE_LIB:-@LIBEXECDIR@/libqq-wl-portal.so}"
 LOG="${QQ_WL_NATIVE_LOG:-${XDG_RUNTIME_DIR:-/tmp}/linuxqq-wayland-native-screenshare-fix.log}"
 QQ_CRASH_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/QQ/crash_files"
-CRASH_KEEP="${XDG_STATE_HOME:-$HOME/.local/state}/linuxqq-wayland-native-screenshare-fix/crash"
+CRASH_KEEP="${XDG_CACHE_HOME:-$HOME/.cache}/linuxqq-wayland-native-screenshare-fix/crash"
 
 # QQ 崩溃时 Bugly 把调用栈写进 crash_files/tomb_*.txt，但 linuxqq 启动脚本每次都会清空这个目录。
 # 启动前把它们挪到自己的目录里保存，--doctor 会列出最近的几次。
