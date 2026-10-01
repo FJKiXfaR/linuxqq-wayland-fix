@@ -1,0 +1,155 @@
+#!/bin/bash
+# qq-wl-native @VERSION@ —— 让 Linux QQ 在 Wayland 下用自带的 portal + PipeWire 路径共享屏幕。
+# https://github.com/SHORiN-KiWATA/linuxqq-wayland-screenshare-fix
+#
+#   qq-wl-native [QQ 的参数...]   启动 QQ
+#   qq-wl-native --doctor         检查环境与当前 QQ 版本是否兼容
+#   qq-wl-native --version
+#
+# 环境变量：
+#   QQ_WL_NATIVE_LIB       注入库路径（默认 @LIBEXECDIR@/libqq-wl-portal.so）
+#   QQ_WL_NATIVE_QQ        QQ 可执行文件（默认先找 PATH 里的 linuxqq，再找 /opt/QQ/qq）
+#   QQ_WL_NATIVE_LOG       日志文件（默认 $XDG_RUNTIME_DIR/qq-wl-native.log）
+#   QQ_WL_NATIVE_DISABLE=1 不做任何拦截（排查问题用）
+
+set -u
+
+VERSION="@VERSION@"
+LIB="${QQ_WL_NATIVE_LIB:-@LIBEXECDIR@/libqq-wl-portal.so}"
+LOG="${QQ_WL_NATIVE_LOG:-${XDG_RUNTIME_DIR:-/tmp}/qq-wl-native.log}"
+
+find_qq() {
+    if [[ -n "${QQ_WL_NATIVE_QQ:-}" ]]; then
+        echo "$QQ_WL_NATIVE_QQ"
+    elif command -v linuxqq >/dev/null 2>&1; then
+        command -v linuxqq
+    elif [[ -x /opt/QQ/qq ]]; then
+        echo /opt/QQ/qq
+    fi
+}
+
+# 当前生效的 QQ 版本目录：热更新版本优先，否则用安装目录。
+qq_version_dir() {
+    local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/QQ/versions"
+    local cur=""
+    if [[ -f "$cfg/config.json" ]]; then
+        cur=$(sed -n 's/.*"curVersion"[^"]*"\([^"]*\)".*/\1/p' "$cfg/config.json" | head -1)
+    fi
+    if [[ -n "$cur" && -d "$cfg/$cur" ]]; then
+        echo "$cfg/$cur"
+    elif [[ -d /opt/QQ/resources/app ]]; then
+        echo /opt/QQ/resources/app
+    fi
+}
+
+doctor() {
+    local ok=0 warn=0 fail=0
+    pass() { printf '  \e[32m✓\e[0m %s\n' "$*"; ok=$((ok + 1)); }
+    note() { printf '  \e[33m!\e[0m %s\n' "$*"; warn=$((warn + 1)); }
+    bad()  { printf '  \e[31m✗\e[0m %s\n' "$*"; fail=$((fail + 1)); }
+
+    echo "qq-wl-native $VERSION 自检"
+    echo
+    echo "[基础]"
+    local qq; qq=$(find_qq)
+    [[ -n "$qq" ]] && pass "QQ: $qq" || bad "找不到 QQ（linuxqq 或 /opt/QQ/qq），可用 QQ_WL_NATIVE_QQ 指定"
+    [[ -r "$LIB" ]] && pass "注入库: $LIB" || bad "找不到注入库 $LIB"
+    [[ -n "${WAYLAND_DISPLAY:-}" ]] && pass "Wayland 会话: $WAYLAND_DISPLAY" || note "WAYLAND_DISPLAY 为空，不在 Wayland 会话里？"
+    [[ -n "${DISPLAY:-}" ]] && pass "XWayland: $DISPLAY" || bad "DISPLAY 为空：QQ 的界面与选窗仍需要 XWayland"
+
+    echo
+    echo "[QQ 内部实现（决定本工具是否还适用）]"
+    local vdir bc av
+    vdir=$(qq_version_dir)
+    bc=$(find "$vdir" /opt/QQ -name broadcast-core.so -print -quit 2>/dev/null)
+    av=$(find "$vdir" /opt/QQ -name libAVSDKPlugin.so -print -quit 2>/dev/null)
+    if [[ -z "$bc" ]]; then
+        bad "找不到 broadcast-core.so（QQ 版本目录: ${vdir:-?}）"
+    else
+        pass "broadcast-core.so: $bc"
+        grep -aq MonitorCapture_WaylandProc "$bc" \
+            && pass "存在 Wayland 采集线程 MonitorCapture_WaylandProc" \
+            || bad "没有 MonitorCapture_WaylandProc：QQ 改了采集实现，本工具可能失效"
+        grep -aq XDG_SESSION_TYPE "$bc" \
+            && pass "仍用 XDG_SESSION_TYPE 判断 Wayland" \
+            || bad "broadcast-core 不再读 XDG_SESSION_TYPE：拦截①会失效"
+        local f
+        for f in pw_context_connect_fd pw_stream_connect pw_core_disconnect; do
+            grep -aq "$f" "$bc" && pass "按名字获取 $f" || bad "找不到 $f：拦截②会失效"
+        done
+        grep -aq pa_context_get_sink_info_by_name "$bc" \
+            && pass "设备音频仍通过 pa_context_get_sink_info_by_name 查询格式" \
+            || note "设备音频的查询方式变了，「共享设备音频」可能无声"
+    fi
+    if [[ -n "$av" ]] && grep -aq 'Wayland桌面环境暂时无法使用屏幕分享功能\|Screen share on wayland is not yet supported' "$av" "$vdir"/*.node 2>/dev/null; then
+        pass "QQ 仍在界面层拦截 Wayland（本工具通过 XDG_SESSION_TYPE=x11 绕过）"
+    fi
+
+    echo
+    echo "[桌面环境]"
+    if command -v busctl >/dev/null 2>&1; then
+        local types
+        types=$(busctl --user get-property org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop \
+                org.freedesktop.portal.ScreenCast AvailableSourceTypes 2>/dev/null | awk '{print $2}')
+        [[ -n "$types" && "$types" != 0 ]] && pass "portal 录屏可用（AvailableSourceTypes=$types）" \
+            || bad "xdg-desktop-portal 没有可用的 ScreenCast 实现（需要 -gnome / -kde / -wlr / niri 等后端）"
+    else
+        note "没有 busctl，跳过 portal 检查"
+    fi
+
+    local ee
+    for ee in "$HOME/.var/app/com.github.wwmm.easyeffects/config/easyeffects/db/easyeffectsrc" \
+              "${XDG_CONFIG_HOME:-$HOME/.config}/easyeffects/db/easyeffectsrc"; do
+        [[ -f "$ee" ]] || continue
+        if [[ $(grep -c '^blocklist=.*\bTRAE\b' "$ee") -ge 2 ]]; then
+            pass "Easy Effects 已排除 QQ（TRAE）"
+        else
+            note "检测到 Easy Effects：请在「输入」「输出」的排除名单里都加上 TRAE，否则 QQ 一开通话/共享就会崩（$ee）"
+        fi
+    done
+
+    echo
+    echo "[正在运行的 QQ]"
+    local pid
+    pid=$(pgrep -f '^/opt/QQ/qq( |$)' | while read -r p; do
+              tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -q -- '--type=' || echo "$p"
+          done | head -1)
+    if [[ -z "$pid" ]]; then
+        pass "QQ 未运行"
+    elif tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -q 'libqq-wl-portal.so'; then
+        pass "QQ（PID $pid）已注入"
+    else
+        bad "QQ（PID $pid）没有注入：请完全退出 QQ（含托盘），再用 qq-wl-native 启动"
+    fi
+
+    echo
+    echo "通过 $ok，提醒 $warn，失败 $fail。日志：$LOG"
+    [[ $fail -eq 0 ]]
+}
+
+case "${1:-}" in
+    --doctor) doctor; exit $? ;;
+    --version) echo "qq-wl-native $VERSION"; exit 0 ;;
+    --help|-h) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+QQ=$(find_qq)
+if [[ -z "$QQ" ]]; then
+    echo "qq-wl-native: 找不到 QQ（linuxqq 或 /opt/QQ/qq），可用 QQ_WL_NATIVE_QQ 指定" >&2
+    exit 1
+fi
+if [[ ! -r "$LIB" ]]; then
+    echo "qq-wl-native: 找不到注入库 $LIB" >&2
+    exit 1
+fi
+
+# XDG_SESSION_TYPE=x11：让 QQ 界面与音视频 SDK 不拦截共享；
+#   注入库只对 broadcast-core.so 改报 wayland，使它走自带的 portal + PipeWire 路径。
+# MESA_SHADER_CACHE_DISABLE：QQ 的 libAVSDKPlugin 导出了自带的 ZSTD_* 符号，
+#   会劫持 Mesa 着色器缓存的 zstd 解压，导致采集进程崩溃。
+export LD_PRELOAD="$LIB${LD_PRELOAD:+:$LD_PRELOAD}"
+export XDG_SESSION_TYPE=x11
+export MESA_SHADER_CACHE_DISABLE="${MESA_SHADER_CACHE_DISABLE:-true}"
+
+{ echo "=== qq-wl-native $VERSION $(date '+%F %T') $QQ $*"; } >"$LOG" 2>/dev/null || LOG=/dev/null
+exec "$QQ" --ozone-platform=wayland "$@" >>"$LOG" 2>&1

@@ -1,0 +1,25 @@
+# 发布用 PKGBUILD：直接构建本仓库的工作树（CI 使用）。
+# AUR 上的 linuxqq-wayland-native-screenshare-fix-git 从 git 拉取源码，见仓库 README。
+# Maintainer: Shorin <shorin@example.com>
+pkgname=linuxqq-wayland-native-screenshare-fix
+pkgver=${QQWL_VERSION:-0.0.0}
+pkgrel=1
+pkgdesc="修复 Linux QQ 在 Wayland 下的屏幕共享（启用 QQ 自带的 portal + PipeWire 采集路径）"
+arch=('x86_64' 'aarch64')
+url="https://github.com/SHORiN-KiWATA/linuxqq-wayland-screenshare-fix"
+license=('MIT')
+depends=('glibc' 'glib2')
+makedepends=('libpulse' 'libpipewire' 'pkgconf')
+optdepends=('linuxqq: QQ 本体'
+            'xdg-desktop-portal: 屏幕录制（需要合成器对应的后端）')
+
+_root="$startdir/../.."
+
+build() {
+    make -C "$_root" clean
+    make -C "$_root" VERSION="$pkgver"
+}
+
+package() {
+    make -C "$_root" install DESTDIR="$pkgdir" PREFIX=/usr VERSION="$pkgver"
+}
