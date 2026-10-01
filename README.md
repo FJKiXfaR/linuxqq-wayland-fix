@@ -54,6 +54,8 @@ sudo make install PREFIX=/usr
 4. 合成器弹出 portal 选择框，在**这里**选真正要共享的屏幕或窗口。
 5. 需要共享电脑声音时，点共享工具栏上的「共享设备音频」。
 
+同时安装了 [linuxqq-wayland-clipboard-fix](https://github.com/SHORiN-KiWATA/linuxqq-wayland-clipboard-fix)（修复 Wayland 下的剪贴板）时，从任意一个入口打开，两个修复都会生效。
+
 QQ 崩溃时，崩溃记录（Bugly 的 `tomb_*.txt`）会被保存到 `~/.cache/linuxqq-wayland-native-screenshare-fix/crash/`（原位置会被 `linuxqq` 启动脚本清空），反馈问题时请附上。
 
 检查环境与当前 QQ 版本是否兼容：

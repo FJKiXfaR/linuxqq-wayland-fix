@@ -176,6 +176,12 @@ fi
 # MESA_SHADER_CACHE_DISABLE：QQ 的 libAVSDKPlugin 导出了自带的 ZSTD_* 符号，
 #   会劫持 Mesa 着色器缓存的 zstd 解压，导致采集进程崩溃。
 export LD_PRELOAD="$LIB${LD_PRELOAD:+:$LD_PRELOAD}"
+# 装了剪贴板修复（linuxqq-wayland-clipboard-fix）时一并加载，从哪个菜单入口打开两个修复都生效。
+for cb in /usr/lib/linuxqq-wayland-clipboard-fix/libqq-clipbridge.so /usr/lib64/linuxqq-wayland-clipboard-fix/libqq-clipbridge.so; do
+    [[ -r "$cb" ]] || continue
+    case ":$LD_PRELOAD:" in *"/libqq-clipbridge.so:"*) ;; *) LD_PRELOAD="$LD_PRELOAD:$cb" ;; esac
+    break
+done
 export XDG_SESSION_TYPE=x11
 export MESA_SHADER_CACHE_DISABLE="${MESA_SHADER_CACHE_DISABLE:-true}"
 
