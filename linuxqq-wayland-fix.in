@@ -153,6 +153,14 @@ doctor() {
     if systemctl --user is-active -q linuxqq-clipsync 2>/dev/null || pgrep -f "(^|/)linuxqq-clipsync( |$)" >/dev/null; then
         note "linuxqq-clipsync 正在运行：本工具已包含剪贴板修复，同时运行会重复同步。请停用：systemctl --user disable --now linuxqq-clipsync"
     fi
+    if command -v hyprctl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+        local mon_cnt mon_x
+        mon_cnt=$(hyprctl monitors -j 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+        mon_x=$(hyprctl monitors -j 2>/dev/null | jq -r '.[0].x // 0' 2>/dev/null || echo 0)
+        if [[ "$mon_cnt" -eq 1 && "$mon_x" -ne 0 ]]; then
+            note "检测到单屏但显示器起始坐标非 0（X=$mon_x）：已由注入库防护，建议将单屏位置设为 0x0 保持最佳对齐"
+        fi
+    fi
 
     echo
     echo "[正在运行的 QQ]"

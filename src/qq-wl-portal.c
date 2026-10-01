@@ -40,6 +40,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/mman.h>
+#include <link.h>
 #include <unistd.h>
 
 #define LOG(...) fprintf(stderr, "[qq-wl-portal pid=%ld] " __VA_ARGS__), \
@@ -647,6 +649,10 @@ static int wrap_queue(struct pw_stream *stream, struct pw_buffer *b)
 typedef void *(*dlsym_fn)(void *, const char *);
 
 /* 汇编蹦床（dlsym_trampoline.S）直接跳到这里，所以不能是 static。 */
+#if defined(__x86_64__)
+static void fix_zero_size_assertion(void);
+#endif
+
 __attribute__((visibility("hidden"))) dlsym_fn qqwl_real_dlsym;
 
 static void resolve_dlsym(void)
@@ -661,6 +667,9 @@ static void init_dlsym(void)
 {
     if (!qqwl_real_dlsym)
         resolve_dlsym();
+#if defined(__x86_64__)
+    fix_zero_size_assertion();
+#endif
 }
 
 static void *intercept(void *handle, const char *name)
@@ -847,3 +856,83 @@ pa_operation *pa_context_get_source_info_by_name(pa_context *c,
     }
     return real(c, name, cb, userdata);
 }
+
+/* ---------- 6. 修复屏幕坐标异常时 QQ 主进程零尺寸断言崩溃 ---------- */
+
+#if defined(__x86_64__)
+static int patch_zero_size_cb(struct dl_phdr_info *info, size_t size, void *data)
+{
+    (void)size;
+    (void)data;
+
+    /* 仅检查主可执行程序（qq） */
+    if (info->dlpi_name && *info->dlpi_name) {
+        const char *base = strrchr(info->dlpi_name, '/');
+        const char *name = base ? base + 1 : info->dlpi_name;
+        if (strcmp(name, "qq") != 0)
+            return 0;
+    }
+
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0)
+        page_size = 4096;
+
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *phdr = &info->dlpi_phdr[i];
+        if (phdr->p_type != PT_LOAD || !(phdr->p_flags & PF_X))
+            continue;
+
+        uintptr_t seg_start = info->dlpi_addr + phdr->p_vaddr;
+        size_t seg_len = phdr->p_memsz;
+        const uint8_t *p = (const uint8_t *)seg_start;
+
+        /* 特征码：
+         * 44 8b 7e 08       mov 0x8(%rsi), %r15d
+         * 45 85 ff          test %r15d, %r15d
+         * 74 ??             je crash (39f8225: int3; ud2)
+         * 44 8b 66 0c       mov 0xc(%rsi), %r12d
+         * 45 85 e4          test %r12d, %r12d
+         * 74 ??             je crash
+         */
+        for (size_t off = 0; off + 18 <= seg_len; off++) {
+            if (p[off] == 0x44 && p[off+1] == 0x8b && p[off+2] == 0x7e && p[off+3] == 0x08 &&
+                p[off+4] == 0x45 && p[off+5] == 0x85 && p[off+6] == 0xff && p[off+7] == 0x74 &&
+                p[off+9] == 0x44 && p[off+10] == 0x8b && p[off+11] == 0x66 && p[off+12] == 0x0c &&
+                p[off+13] == 0x45 && p[off+14] == 0x85 && p[off+15] == 0xe4 && p[off+16] == 0x74) {
+
+                uintptr_t patch_addr = (uintptr_t)&p[off];
+                uintptr_t page_start = patch_addr & ~(uintptr_t)(page_size - 1);
+                size_t map_len = (patch_addr + 18) - page_start;
+
+                if (mprotect((void *)page_start, map_len, PROT_READ | PROT_WRITE | PROT_EXEC) == 0) {
+                    uint8_t *writable = (uint8_t *)patch_addr;
+                    writable[7] = 0x90;  /* nop */
+                    writable[8] = 0x90;  /* nop */
+                    writable[16] = 0x90; /* nop */
+                    writable[17] = 0x90; /* nop */
+                    mprotect((void *)page_start, map_len, PROT_READ | PROT_EXEC);
+                    LOG("patched QQ main zero-size screen assertion at %p", (long)getpid(), (void *)patch_addr);
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static void fix_zero_size_assertion(void)
+{
+    /* 确认是 qq 进程 */
+    char exe[256];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0)
+        return;
+    exe[n] = '\0';
+    const char *base = strrchr(exe, '/');
+    if (!base || strcmp(base + 1, "qq") != 0)
+        return;
+
+    dl_iterate_phdr(patch_zero_size_cb, NULL);
+}
+#endif
+
