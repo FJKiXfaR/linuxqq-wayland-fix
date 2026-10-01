@@ -1,5 +1,5 @@
 #!/bin/bash
-# linuxqq-wayland-native-screenshare-fix @VERSION@ —— 让 Linux QQ 在 Wayland 下用自带的 portal + PipeWire 路径共享屏幕。
+# linuxqq-wayland-native-screenshare-fix 0.1.0-1-g7666504-dirty —— 让 Linux QQ 在 Wayland 下用自带的 portal + PipeWire 路径共享屏幕。
 # https://github.com/SHORiN-KiWATA/linuxqq-wayland-screenshare-fix
 #
 #   linuxqq-wayland-native-screenshare-fix [QQ 的参数...]   启动 QQ
@@ -7,15 +7,15 @@
 #   linuxqq-wayland-native-screenshare-fix --version
 #
 # 环境变量：
-#   QQ_WL_NATIVE_LIB       注入库路径（默认 @LIBEXECDIR@/libqq-wl-portal.so）
+#   QQ_WL_NATIVE_LIB       注入库路径（默认 /usr/lib/linuxqq-wayland-screenshare-fix/libqq-wl-portal.so）
 #   QQ_WL_NATIVE_QQ        QQ 可执行文件（默认先找 PATH 里的 linuxqq，再找 /opt/QQ/qq）
 #   QQ_WL_NATIVE_LOG       日志文件（默认 $XDG_RUNTIME_DIR/linuxqq-wayland-native-screenshare-fix.log）
 #   QQ_WL_NATIVE_DISABLE=1 不做任何拦截（排查问题用）
 
 set -u
 
-VERSION="@VERSION@"
-LIB="${QQ_WL_NATIVE_LIB:-@LIBEXECDIR@/libqq-wl-portal.so}"
+VERSION="0.1.0-1-g7666504-dirty"
+LIB="${QQ_WL_NATIVE_LIB:-/usr/lib/linuxqq-wayland-screenshare-fix/libqq-wl-portal.so}"
 LOG="${QQ_WL_NATIVE_LOG:-${XDG_RUNTIME_DIR:-/tmp}/linuxqq-wayland-native-screenshare-fix.log}"
 QQ_CRASH_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/QQ/crash_files"
 CRASH_KEEP="${XDG_CACHE_HOME:-$HOME/.cache}/linuxqq-wayland-native-screenshare-fix/crash"

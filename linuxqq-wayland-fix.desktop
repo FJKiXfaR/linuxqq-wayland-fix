@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=QQ（Wayland修复版）
+Name[en]=QQ (Wayland Fix)
+Comment=修复了 Wayland 下屏幕共享、共享电脑声音和剪贴板的 QQ
+Comment[en]=Linux QQ with working screen sharing and clipboard on Wayland
+Exec=linuxqq-wayland-fix %U
+Icon=qq
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupWMClass=QQ

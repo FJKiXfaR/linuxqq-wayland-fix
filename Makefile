@@ -1,11 +1,11 @@
-# linuxqq-wayland-screenshare-fix
+# linuxqq-wayland-fix
 #
 #   make
 #   make install DESTDIR=... PREFIX=/usr
 #
-# LIBEXECDIR 下放注入库；启动脚本在安装时写入它的绝对路径。
+# LIBEXECDIR 下放两个注入库；启动脚本在安装时写入它的绝对路径。
 
-NAME       := linuxqq-wayland-screenshare-fix
+NAME       := linuxqq-wayland-fix
 VERSION    ?= $(or $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//'),0.0.0)
 
 PREFIX     ?= /usr
@@ -17,44 +17,64 @@ DOCDIR     ?= $(DATADIR)/doc/$(NAME)
 CC         ?= cc
 CFLAGS     ?= -O2 -g
 PKG_CONFIG ?= pkg-config
+WAYLAND_SCANNER ?= wayland-scanner
 
-DEP_CFLAGS := $(shell $(PKG_CONFIG) --cflags gio-unix-2.0 libpulse libpipewire-0.3)
-DEP_LIBS   := $(shell $(PKG_CONFIG) --libs gio-unix-2.0)
+# 屏幕共享修复：只用 libpulse / libpipewire 的头文件，运行时不依赖它们
+SS_CFLAGS  := $(shell $(PKG_CONFIG) --cflags gio-unix-2.0 libpulse libpipewire-0.3)
+SS_LIBS    := $(shell $(PKG_CONFIG) --libs gio-unix-2.0)
+# 剪贴板修复
+CB_CFLAGS  := $(shell $(PKG_CONFIG) --cflags x11 wayland-client)
+CB_LIBS    := $(shell $(PKG_CONFIG) --libs x11 wayland-client)
 
-CMD        := linuxqq-wayland-native-screenshare-fix
-LIB        := libqq-wl-portal.so
-OBJS       := src/qq-wl-portal.o src/dlsym_trampoline.o
+SS_LIB     := libqq-wl-portal.so
+CB_LIB     := libqq-clipbridge.so
+CMD        := $(NAME)
+PROTOCOLS  := ext-data-control-v1 wlr-data-control-unstable-v1
+GEN_H      := $(PROTOCOLS:%=build/%-client-protocol.h)
+GEN_C      := $(PROTOCOLS:%=build/%-protocol.c)
 
-all: $(LIB) $(CMD)
+all: $(SS_LIB) $(CB_LIB) $(CMD)
 
-src/qq-wl-portal.o: src/qq-wl-portal.c
+build/qq-wl-portal.o: src/qq-wl-portal.c
+	@mkdir -p build
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -Wall -Wextra -Wno-nonnull-compare \
-	    -DQQWL_VERSION='"$(VERSION)"' $(DEP_CFLAGS) -c -o $@ $<
+	    -DQQWL_VERSION='"$(VERSION)"' $(SS_CFLAGS) -c -o $@ $<
 
-src/dlsym_trampoline.o: src/dlsym_trampoline.S
+build/dlsym_trampoline.o: src/dlsym_trampoline.S
+	@mkdir -p build
 	$(CC) $(CPPFLAGS) $(ASFLAGS) -fPIC -c -o $@ $<
 
-# 不链接 libpulse：只在 broadcast-core 已加载 libpulse 时才用到它，见源码注释。
-$(LIB): $(OBJS)
-	$(CC) $(LDFLAGS) -shared -Wl,-z,defs -o $@ $(OBJS) $(DEP_LIBS) -ldl -Wl,--allow-shlib-undefined
+$(SS_LIB): build/qq-wl-portal.o build/dlsym_trampoline.o
+	$(CC) $(LDFLAGS) -shared -Wl,-z,defs -o $@ $^ $(SS_LIBS) -ldl
+
+build/%-client-protocol.h: protocol/%.xml
+	@mkdir -p build
+	$(WAYLAND_SCANNER) client-header $< $@
+
+build/%-protocol.c: protocol/%.xml
+	@mkdir -p build
+	$(WAYLAND_SCANNER) private-code $< $@
+
+$(CB_LIB): src/qq-clipbridge.c $(GEN_H) $(GEN_C)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -Wall -Ibuild $(CB_CFLAGS) \
+	    $(LDFLAGS) -shared -Wl,-z,defs -o $@ src/qq-clipbridge.c $(GEN_C) $(CB_LIBS) -lpthread -ldl
 
 $(CMD): $(CMD).in
 	sed -e 's|@LIBEXECDIR@|$(LIBEXECDIR)|g' -e 's|@VERSION@|$(VERSION)|g' $< > $@
 	chmod +x $@
 
 install: all
-	install -Dm755 $(LIB)               $(DESTDIR)$(LIBEXECDIR)/$(LIB)
-	install -Dm755 $(CMD)               $(DESTDIR)$(BINDIR)/$(CMD)
-	install -Dm644 $(CMD).desktop       $(DESTDIR)$(DATADIR)/applications/$(CMD).desktop
-	install -Dm644 README.md            $(DESTDIR)$(DOCDIR)/README.md
-	install -Dm644 LICENSE              $(DESTDIR)$(DATADIR)/licenses/$(NAME)/LICENSE
+	install -Dm755 $(SS_LIB)         $(DESTDIR)$(LIBEXECDIR)/$(SS_LIB)
+	install -Dm755 $(CB_LIB)         $(DESTDIR)$(LIBEXECDIR)/$(CB_LIB)
+	install -Dm755 $(CMD)            $(DESTDIR)$(BINDIR)/$(CMD)
+	install -Dm644 $(CMD).desktop    $(DESTDIR)$(DATADIR)/applications/$(CMD).desktop
+	install -Dm644 README.md         $(DESTDIR)$(DOCDIR)/README.md
+	install -Dm644 LICENSE           $(DESTDIR)$(DATADIR)/licenses/$(NAME)/LICENSE
 
 clean:
-	rm -f $(OBJS) $(LIB) $(CMD)
-
-.PHONY: all install clean
+	rm -rf build src/*.o $(SS_LIB) $(CB_LIB) $(CMD)
 
 print-version:
 	@echo $(VERSION)
 
-.PHONY: print-version
+.PHONY: all install clean print-version

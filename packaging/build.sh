@@ -4,7 +4,7 @@
 set -euo pipefail
 
 kind=$1 label=$2 version=$3
-pkg=linuxqq-wayland-native-screenshare-fix
+pkg=linuxqq-wayland-fix
 root=$(cd "$(dirname "$0")/.." && pwd)
 dist=$root/dist
 mkdir -p "$dist"
@@ -23,15 +23,15 @@ Package: $pkg
 Version: $version-1~$label
 Architecture: $arch
 Maintainer: Shorin <shorin@example.com>
-Depends: libc6 (>= 2.34), libglib2.0-0t64 | libglib2.0-0
+Depends: libc6 (>= 2.34), libglib2.0-0t64 | libglib2.0-0, libx11-6, libwayland-client0
 Recommends: linuxqq, xdg-desktop-portal
 Section: net
 Priority: optional
-Homepage: https://github.com/SHORiN-KiWATA/linuxqq-wayland-screenshare-fix
-Description: Fix Linux QQ screen sharing on Wayland
- Lets Linux QQ use its own built-in xdg-desktop-portal + PipeWire screen
- capture path on Wayland, and fixes device-audio sharing on sound cards
- whose native sample format is not s16le/f32le. Start QQ with linuxqq-wayland-native-screenshare-fix.
+Homepage: https://github.com/SHORiN-KiWATA/linuxqq-wayland-fix
+Description: Fix Linux QQ screen sharing, device audio and clipboard on Wayland
+ Fixes Linux QQ on Wayland: screen sharing does not work, shared device
+ audio is silent, and copy/paste between QQ and other apps is broken.
+ Open "QQ（Wayland修复版）" from the application menu.
 CTRL
     dpkg-deb --root-owner-group --build "$stage" "$dist/${pkg}_${version}-1~${label}_${arch}.deb"
     ;;
