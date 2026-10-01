@@ -29,11 +29,13 @@ paru -S linuxqq-wayland-native-screenshare-fix-git
 从 [Releases](https://github.com/SHORiN-KiWATA/linuxqq-wayland-screenshare-fix/releases) 下载对应发行版的包：
 
 ```bash
-sudo apt install ./linuxqq-wayland-native-screenshare-fix_*~debian12_amd64.deb     # Debian
-sudo apt install ./linuxqq-wayland-native-screenshare-fix_*~ubuntu24.04_amd64.deb  # Ubuntu
-sudo dnf install ./linuxqq-wayland-native-screenshare-fix-*.fc43.x86_64.rpm          # Fedora
-sudo pacman -U ./linuxqq-wayland-native-screenshare-fix-*.pkg.tar.zst               # Arch
+sudo apt install ./linuxqq-wayland-native-screenshare-fix_*debian12_amd64.deb     # Debian 12+
+sudo apt install ./linuxqq-wayland-native-screenshare-fix_*ubuntu24.04_amd64.deb  # Ubuntu 24.04+
+sudo dnf install ./linuxqq-wayland-native-screenshare-fix-*.fc43.x86_64.rpm         # Fedora 43+
+sudo pacman -U ./linuxqq-wayland-native-screenshare-fix-*.pkg.tar.zst              # Arch（需先装好 linuxqq）
 ```
+
+QQ 本体需要另外安装（[官方下载](https://im.qq.com/linuxqq/)，Arch 用 AUR 的 `linuxqq`）。
 
 ### 从源码
 
