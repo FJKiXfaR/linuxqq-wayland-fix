@@ -1,15 +1,8 @@
 # linuxqq-wayland-fix
 
-修复 Linux QQ 以 **Wayland** 运行时的这些问题：
+修复 Linux QQ 以 **Wayland** 运行时的屏幕分享和剪贴板异常。
 
-| 问题 | 修复后 |
-| --- | --- |
-| 屏幕共享不能用（提示「Wayland桌面环境暂时无法使用屏幕分享功能」，或对方黑屏） | ✅ 由合成器弹出选择框，共享屏幕或窗口 |
-| 共享时开了「共享设备音频」，对方听不到电脑的声音 | ✅ |
-| 右键复制的消息、图片、文件进不了系统剪贴板 | ✅ |
-| 别的程序复制的内容、截图、文件粘贴不进 QQ | ✅ |
-
-不修改任何 QQ 文件。本项目接替 linuxqq-wayland-native-screenshare-fix 和 [linuxqq-clipsync](https://github.com/SHORiN-KiWATA/linuxqq-clipsync)。
+>本项目接替 linuxqq-wayland-native-screenshare-fix 和 [linuxqq-clipsync](https://github.com/SHORiN-KiWATA/linuxqq-clipsync)。
 
 ## 安装
 
@@ -18,8 +11,6 @@
 ```bash
 paru -S linuxqq-wayland-fix-git
 ```
-
-依赖 `linuxqq`。`linuxqq`（官方包）实测可用；`linuxqq-appimage` 经分析应当可用，欢迎反馈。沙盒版（`linuxqq-nt-bwrap`）不支持。
 
 ### Debian 12+ / Ubuntu 24.04+ / Fedora 43+ / Arch
 
@@ -45,30 +36,33 @@ sudo make install PREFIX=/usr
 
 ## 使用
 
-1. **完全退出 QQ**（包括托盘）。
-2. 从应用菜单打开「**QQ（Wayland修复版）**」。
-3. 共享屏幕：在 QQ 自己的选窗里随便选「桌面1」→「确定」，然后在合成器弹出的选择框里选真正要共享的屏幕或窗口；需要共享电脑声音时，点共享工具栏上的「共享设备音频」。
-4. 剪贴板：照常复制粘贴即可。
+- 屏幕分享
+  
+  1. **完全退出 QQ**（包括托盘）。
+  2. 从应用菜单打开「**QQ（Wayland修复版）**」。
+  3. 共享屏幕：在 QQ 自己的选窗里随便选「桌面」→「确定」，然后在合成器弹出的选择框里选真正要共享的屏幕或窗口；需要共享电脑声音时，点共享工具栏上的「共享设备音频」。
 
-检查环境、以及 QQ 更新后修复是否仍然适用：
+- 剪贴板
+  
+  照常复制粘贴即可。
 
-```bash
-linuxqq-wayland-fix --doctor
-```
+- 检查环境
+  
+    检查环境、以及 QQ 更新后修复是否仍然适用：
 
-QQ 崩溃时，崩溃记录（Bugly 的 `tomb_*.txt`）会保存到 `~/.cache/linuxqq-wayland-fix/crash/`（原位置会被 `linuxqq` 启动脚本清空），反馈问题时请附上。
+    ```bash
+    linuxqq-wayland-fix --doctor
+    ```
+
+    QQ 崩溃时，崩溃记录（Bugly 的 `tomb_*.txt`）会保存到 `~/.cache/linuxqq-wayland-fix/crash/`（原位置会被 `linuxqq` 启动脚本清空），反馈问题时请附上。
 
 ## 兼容性
 
-| 项目 | 要求 |
-| --- | --- |
-| 屏幕共享 | xdg-desktop-portal 的 ScreenCast（niri、KDE、GNOME、wlroots 系都有对应后端） |
-| 剪贴板 | 合成器支持 data-control（`ext-data-control-v1` 或 `wlr-data-control-unstable-v1`）：niri、KDE Plasma、Hyprland、sway、labwc 等；**GNOME 不支持** |
-| XWayland | 需要（QQ 的界面流程和剪贴板仍是 X11） |
-
-实测环境：Arch Linux + niri + xwayland-satellite，QQ 3.2.34-53644。
-
-QQ 以 X11 方式运行时（`--ozone-platform=x11`），XWayland 本身会同步剪贴板，剪贴板修复会自动不启用。
+| 项目     | 要求                                                                                                                                             |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 屏幕共享 | xdg-desktop-portal 的 ScreenCast（niri、KDE、GNOME、wlroots 系都有对应后端）                                                                     |
+| 剪贴板   | 合成器支持 data-control（`ext-data-control-v1` 或 `wlr-data-control-unstable-v1`）：niri、KDE Plasma、Hyprland、sway、labwc 等；**GNOME 不支持** |
+| XWayland | 需要（QQ 的界面流程和剪贴板仍是 X11）                                                                                                            |
 
 ## 已知问题
 
@@ -114,14 +108,14 @@ grep -E 'qq-wl-portal|qq-clipbridge' "$XDG_RUNTIME_DIR/linuxqq-wayland-fix.log"
 [qq-clipbridge] Wayland clipboard changed -> X11 for QQ: image/png        ← 别处复制
 ```
 
-| 症状 | 原因 / 办法 |
-| --- | --- |
-| 提示「Wayland桌面环境暂时无法使用屏幕分享功能」 | 不是从「QQ（Wayland修复版）」打开的 |
-| 点共享没反应，`coredumpctl` 有 QQ 的 SIGTRAP，栈里有 `PulseAudioWrapper` | Easy Effects，见上文 |
-| 点「确定」没反应，栈里有 `ZSTD_` / `libgallium` | QQ 自带的 zstd 与 Mesa 冲突；启动器已设置 `MESA_SHADER_CACHE_DISABLE=true`，请确认没被覆盖 |
-| 日志里没有任何 `qq-wl-portal` / `qq-clipbridge` | QQ 没被注入（旧 QQ 没退干净），或 QQ 更新后改了实现，运行 `--doctor` |
-| `compositor supports neither …` | 合成器不支持 data-control（如 GNOME），剪贴板修复不可用 |
-| `response=1` | 在 portal 选择框里点了取消 |
+| 症状                                                                     | 原因 / 办法                                                                                |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| 提示「Wayland桌面环境暂时无法使用屏幕分享功能」                          | 不是从「QQ（Wayland修复版）」打开的                                                        |
+| 点共享没反应，`coredumpctl` 有 QQ 的 SIGTRAP，栈里有 `PulseAudioWrapper` | Easy Effects，见上文                                                                       |
+| 点「确定」没反应，栈里有 `ZSTD_` / `libgallium`                          | QQ 自带的 zstd 与 Mesa 冲突；启动器已设置 `MESA_SHADER_CACHE_DISABLE=true`，请确认没被覆盖 |
+| 日志里没有任何 `qq-wl-portal` / `qq-clipbridge`                          | QQ 没被注入（旧 QQ 没退干净），或 QQ 更新后改了实现，运行 `--doctor`                       |
+| `compositor supports neither …`                                          | 合成器不支持 data-control（如 GNOME），剪贴板修复不可用                                    |
+| `response=1`                                                             | 在 portal 选择框里点了取消                                                                 |
 
 排查时可以单独关掉某个修复：`QQ_WL_NATIVE_DISABLE=1`（屏幕共享）、`QQ_CLIPBOARD_FIX_DISABLE=1`（剪贴板）。
 
