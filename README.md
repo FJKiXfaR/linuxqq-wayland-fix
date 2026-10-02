@@ -1,3 +1,5 @@
+
+https://github.com/user-attachments/assets/336d5b3f-ea1c-45f9-967c-1f81c01148fa
 # linuxqq-wayland-fix
 
 修复 Linux QQ 以 **Wayland** 运行时的屏幕分享、剪贴板和截图异常。
@@ -32,7 +34,7 @@
 
   >修复后
 
-  ![](./pics/屏幕分享-after.mp4)
+  https://github.com/user-attachments/assets/47fc8378-0bf7-4ef8-ac37-bfc1389dcf22
 
 - 截图
 
@@ -43,6 +45,8 @@
   ![](./pics/截图闪退-before.gif)
 
   这个仓库拦截了 QQ 截图操作，并将其改为 `wlr-screencopy` 截取显示输出。
+
+  https://github.com/user-attachments/assets/36b6b031-19d0-4af2-9def-4e1a63a7ce11
   
 >详细的逆向分析和原理见由 Deepseek V4.1 Flash 和 Opus 5.5 排查生成的：[docs/原理详解.md](docs/原理详解.md)。
 
