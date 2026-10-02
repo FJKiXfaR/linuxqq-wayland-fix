@@ -27,6 +27,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
@@ -310,6 +313,172 @@ static void blit(uint32_t *dst, int dw, int dh, int mx, int my, int mw, int mh, 
     }
 }
 
+/* ---------------- 目标显示器：niri 聚焦输出，退回指针位置 ---------------- */
+
+/* 通过 niri IPC 取聚焦输出名；带 1 秒缓存（一次截图里会查询多次）。 */
+static int niri_focused_output(char *name, size_t name_size)
+{
+    static char cached[64];
+    static struct timespec cached_at;
+
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (cached[0] &&
+        (now.tv_sec - cached_at.tv_sec) * 1000 +
+            (now.tv_nsec - cached_at.tv_nsec) / 1000000 < 1000) {
+        snprintf(name, name_size, "%s", cached);
+        return 1;
+    }
+
+    const char *path = getenv("NIRI_SOCKET");
+    if (!path || !*path)
+        return 0;
+
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0)
+        return 0;
+    struct timeval tv = { 2, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+
+    struct sockaddr_un addr = { 0 };
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
+        close(fd);
+        return 0;
+    }
+    static const char req[] = "\"FocusedOutput\"\n";
+    if (write(fd, req, sizeof req - 1) != (ssize_t)(sizeof req - 1)) {
+        close(fd);
+        return 0;
+    }
+    char buf[8192];
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0)
+        return 0;
+    buf[n] = '\0';
+
+    const char *p = strstr(buf, "\"name\":\"");
+    if (!p)
+        return 0;
+    p += 8;
+    const char *e = strchr(p, '"');
+    if (!e || (size_t)(e - p) >= name_size)
+        return 0;
+    snprintf(name, name_size, "%.*s", (int)(e - p), p);
+
+    snprintf(cached, sizeof cached, "%s", name);
+    cached_at = now;
+    return 1;
+}
+
+/*
+ * pick_monitor：want 非空按名字选（niri 的聚焦输出），否则选指针所在的
+ * XRandR 显示器。返回名字和 X 逻辑尺寸。
+ */
+static int pick_monitor(Display *dpy, const char *want, char *name, size_t name_size,
+                        int *mw, int *mh)
+{
+    Window root = DefaultRootWindow(dpy);
+    int rx = 0, ry = 0;
+    if (!want) {
+        Window rr, cr;
+        int wx, wy;
+        unsigned mask;
+        if (!XQueryPointer(dpy, root, &rr, &cr, &rx, &ry, &wx, &wy, &mask))
+            return 0;
+    }
+
+    void *xrandr = dlopen("libXrandr.so.2", RTLD_LAZY | RTLD_LOCAL);
+    if (!xrandr)
+        return 0;
+    get_monitors_fn get = (get_monitors_fn)dlsym(xrandr, "XRRGetMonitors");
+    free_monitors_fn freem = (free_monitors_fn)dlsym(xrandr, "XRRFreeMonitors");
+    int n = 0, found = 0;
+    MonitorInfo *m = get ? get(dpy, root, True, &n) : NULL;
+    for (int i = 0; m && i < n; i++) {
+        char *nm = XGetAtomName(dpy, m[i].name);
+        if (!nm)
+            continue;
+        int hit = want ? !strcmp(nm, want)
+                       : (rx >= m[i].x && rx < m[i].x + m[i].width &&
+                          ry >= m[i].y && ry < m[i].y + m[i].height);
+        if (hit) {
+            snprintf(name, name_size, "%s", nm);
+            *mw = m[i].width;
+            *mh = m[i].height;
+            found = 1;
+        }
+        XFree(nm);
+        if (found)
+            break;
+    }
+    if (m && freem)
+        freem(m);
+    /* 不 dlclose：libXrandr 可能在 Xlib 里注册过扩展钩子，卸载后
+     * XCloseDisplay 会踩到悬空函数指针。 */
+    return found;
+}
+
+/* 优先 niri 聚焦输出；不是 niri 或查询失败时按指针位置。 */
+static int target_monitor(Display *dpy, char *name, size_t name_size, int *mw, int *mh)
+{
+    char niri[64];
+    if (niri_focused_output(niri, sizeof niri) &&
+        pick_monitor(dpy, niri, name, name_size, mw, mh))
+        return 1;
+    return pick_monitor(dpy, NULL, name, name_size, mw, mh);
+}
+
+/* 单屏模式：只截指针所在显示器，按请求的尺寸缩放。 */
+static struct {
+    Display *dpy;
+    char name[64];
+    int w, h;
+    uint32_t *pix;
+    struct timespec at;
+} mon_cache;
+
+static uint32_t *monitor_image(Display *dpy, const char *name, int w, int h)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (mon_cache.pix && mon_cache.dpy == dpy && mon_cache.w == w && mon_cache.h == h &&
+        !strcmp(mon_cache.name, name) &&
+        (now.tv_sec - mon_cache.at.tv_sec) * 1000 +
+            (now.tv_nsec - mon_cache.at.tv_nsec) / 1000000 < 1500)
+        return mon_cache.pix;
+
+    free(mon_cache.pix);
+    mon_cache.pix = NULL;
+
+    struct capture c;
+    if (capture_all(&c)) {
+        capture_free(&c);
+        return NULL;
+    }
+    uint32_t *pix = calloc((size_t)w * h, 4);
+    if (pix) {
+        for (struct output *o = c.outputs; o; o = o->next)
+            if (o->pix && !strcmp(o->name, name)) {
+                LOG("single-monitor: %s %dx%d -> requested %dx%d", name, o->w, o->h, w, h);
+                blit(pix, w, h, 0, 0, w, h, o);
+                break;
+            }
+    }
+    capture_free(&c);
+
+    mon_cache.dpy = dpy;
+    snprintf(mon_cache.name, sizeof mon_cache.name, "%s", name);
+    mon_cache.w = w;
+    mon_cache.h = h;
+    mon_cache.at = now;
+    mon_cache.pix = pix;
+    return pix;
+}
+
 static uint32_t *root_image(Display *dpy, Window root, int *w, int *h)
 {
     struct timespec now;
@@ -357,8 +526,7 @@ static uint32_t *root_image(Display *dpy, Window root, int *w, int *h)
     }
     if (m && freem)
         freem(m);
-    if (xrandr)
-        dlclose(xrandr);
+    /* 不 dlclose，原因见 pick_monitor。 */
     if (!placed) /* 对不上名字时：铺满第一块屏 */
         for (struct output *o = c.outputs; o; o = o->next)
             if (o->pix) {
@@ -383,9 +551,19 @@ static int fill_from_wayland(Display *dpy, Window root, XImage *img, int x, int 
 {
     int rw = 0, rh = 0;
     uint32_t *pix = NULL;
+    char name[64];
+    int mw = 0, mh = 0;
 
-    if (getenv("WAYLAND_DISPLAY") && img->format == ZPixmap && img->bits_per_pixel == 32)
-        pix = root_image(dpy, root, &rw, &rh);
+    if (getenv("WAYLAND_DISPLAY") && img->format == ZPixmap && img->bits_per_pixel == 32) {
+        if (target_monitor(dpy, name, sizeof name, &mw, &mh)) {
+            /* 单屏模式：QQ 看到的屏幕就是目标显示器（优先 niri 聚焦输出） */
+            pix = monitor_image(dpy, name, img->width, img->height);
+            rw = img->width;
+            rh = img->height;
+        } else {
+            pix = root_image(dpy, root, &rw, &rh);
+        }
+    }
     if (!pix)
         return -1;
     for (int j = 0; j < img->height; j++) {
@@ -494,4 +672,30 @@ Bool XShmGetImage(Display *dpy, Drawable d, XImage *img, int x, int y, unsigned 
     memset(img->data, 0, (size_t)img->bytes_per_line * img->height);
     LOG("XShmGetImage on root %dx%d+%d+%d failed, returning a black image", img->width, img->height, x, y);
     return True;
+}
+
+/*
+ * 单屏模式：QQ 用 XGetWindowAttributes(root) 取「屏幕尺寸」来决定截取范围
+ * 和覆盖层大小。这里把根窗口的宽高报成指针所在显示器的尺寸，配合
+ * fill_from_wayland 只截那块输出；找不到显示器时（真 X11 会话等）保持原样。
+ */
+typedef int (*get_window_attrs_fn)(Display *, Window, XWindowAttributes *);
+
+int XGetWindowAttributes(Display *dpy, Window w, XWindowAttributes *attr)
+{
+    static get_window_attrs_fn real;
+    if (!real)
+        real = (get_window_attrs_fn)dlsym(RTLD_NEXT, "XGetWindowAttributes");
+
+    int r = real(dpy, w, attr);
+    if (r && enabled() && getenv("WAYLAND_DISPLAY") && is_root(dpy, w)) {
+        char name[64];
+        int mw, mh;
+        if (target_monitor(dpy, name, sizeof name, &mw, &mh)) {
+            LOG("single-monitor: report screen as %s %dx%d", name, mw, mh);
+            attr->width = mw;
+            attr->height = mh;
+        }
+    }
+    return r;
 }

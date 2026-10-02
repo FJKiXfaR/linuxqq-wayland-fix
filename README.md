@@ -115,7 +115,7 @@ XWayaland需要正常工作；
 
 - 截图
   
-  截图应该不再闪退。在平铺式合成器上截图窗口可能显示异常，见「已知问题」。
+  截图不再闪退；Wayland 下只截当前聚焦的那块显示器，截图窗口会全屏打开（窗口标题是 `QQ 截图`，方便在合成器里写窗口规则）。KDE、GNOME 下截图背景是黑的（合成器不支持 `wlr-screencopy`），见「已知问题」。
 
 - 检查环境
   
@@ -135,9 +135,9 @@ XWayaland需要正常工作；
 
 **剪贴板（`libqq-clipbridge.so`）**：QQ 的剪贴板代码（`wrapper.node` 里的 `ClipBoardHelper`）只用 Xlib，所以 QQ 在 Wayland 下只读写 X11 剪贴板。本库在 QQ 进程里起一个后台线程，用自己的 X 连接和 data-control 协议双向桥接：QQ 复制时把格式提供给 Wayland，别的程序复制时接管 X11 剪贴板；数据都在粘贴时按需传输一次。
 
-**截图（`libqq-screenshot.so`）**：启动器为了让屏幕共享可用，给 QQ 的是 `XDG_SESSION_TYPE=x11`，于是 QQ 用 X11 的方式对根窗口 `XGetImage` 截全屏；而 Wayland 下的 XWayland 是 rootless 的，根窗口没有内容，这一步必然失败，QQ 不检查返回值就直接崩溃。本库拦截对根窗口的截取，改为通过 `wlr-screencopy` 截取各个 Wayland 输出，按 X 的显示器布局拼好交给 QQ；合成器不支持时给一张黑图，至少不再闪退。
+**截图（`libqq-screenshot.so`）**：启动器为了让屏幕共享可用，给 QQ 的是 `XDG_SESSION_TYPE=x11`，于是 QQ 用 X11 的方式对根窗口 `XGetImage` 截全屏；而 Wayland 下的 XWayland 是 rootless 的，根窗口没有内容，这一步必然失败，QQ 不检查返回值就直接崩溃。本库拦截对根窗口的截取，改为通过 `wlr-screencopy` 截取各个 Wayland 输出，按 X 的显示器布局拼好交给 QQ；合成器不支持时给一张黑图，至少不再闪退。Wayland 下还会把 QQ 看到的「屏幕尺寸」报成当前聚焦显示器（优先 niri 的聚焦输出，其它合成器退回指针位置），只截那一块，保证截图窗口和坐标都是单屏的。
 
-**共享边框（`libqq-borderfix.so`）**：共享时显示的「屏幕共享」全屏边框窗口，是 QQ 原生代码通过 Chromium 建的 Wayland 窗口（Electron 的窗口 API 看不到；QQ 的 Chromium 又静态链接了自带的 Wayland client，符号注入也拦不到）。本库在 socket 层解析出站的 Wayland 线协议，只把这条窗口的 `attach(buffer)` 改写成 `attach(NULL)`，让它始终不映射出来；共享预览和「共享中」工具条不受影响。`QQ_BORDER_FIX_DISABLE=1` 可以关掉。
+**共享边框（`libqq-borderfix.so`）**：共享时显示的「屏幕共享」全屏边框窗口，是 QQ 原生代码通过 Chromium 建的 Wayland 窗口（Electron 的窗口 API 看不到；QQ 的 Chromium 又静态链接了自带的 Wayland client，符号注入也拦不到）。本库在 socket 层解析出站的 Wayland 线协议，只把这条窗口的 `attach(buffer)` 改写成 `attach(NULL)`，让它始终不映射出来；共享预览和「共享中」工具条不受影响。同一个库还会在协议层给截图覆盖层补上标题 `QQ 截图` 并请求全屏，让平铺合成器把它当作覆盖层铺满当前显示器。`QQ_BORDER_FIX_DISABLE=1` 可以关掉这两项。
 
 详细的逆向分析见 [docs/原理详解.md](docs/原理详解.md)。
 
@@ -145,7 +145,7 @@ XWayaland需要正常工作；
 
 - 使用 Easy Effects 时，需在它的「输入」「输出」排除名单里都加上 `TRAE`，否则 QQ 一开通话/共享就会崩；
 - 不要同时运行 linuxqq-clipsync 等其它剪贴板同步工具；
-- 截图窗口在 niri 等平铺式合成器上会被平铺，画面重复显示；KDE、GNOME 下截图背景是黑的；
+- KDE、GNOME 下截图背景是黑的（合成器不支持 `wlr-screencopy`）；
 - 流畅度取决于 QQ 自己的编码；
 - 观看别人共享时画面可能花成横竖条纹：Wayland 下 ANGLE 的 GLES 后端模拟 `GL_LUMINANCE` 纹理有问题，启动器检测到 Vulkan 时会自动用 `--use-angle=vulkan` 规避；没有 Vulkan 时可设 `QQ_WAYLAND_FIX_ANGLE=swiftshader`（较慢）。详见 [原理详解](docs/原理详解.md#附观看共享花屏)。
 
@@ -182,7 +182,7 @@ grep -E 'qq-wl-portal|qq-clipbridge' "$XDG_RUNTIME_DIR/linuxqq-wayland-fix.log"
 | 点「确定」开始共享时 QQ 闪退，崩溃记录里是 `signal: 5 (SIGTRAP)`         | 显示器坐标不从 0 开始时 QQ 算出空的窗口几何（#1）；本工具会自动处理，日志里应有 `empty-geometry fix: patched`，若是 `not patching` 说明 QQ 更新改了实现，请反馈 |
 | 共享时仍出现全屏「屏幕共享」边框窗口                                      | 边框隐藏没生效：确认旧 QQ 已完全退出（含托盘）再从「QQ（Wayland修复版）」启动；正常时日志里应有 `hiding 屏幕共享 border window`，没有的话运行 `--doctor` 并反馈 |
 
-排查时可以单独关掉某个修复：`QQ_WL_NATIVE_DISABLE=1`（屏幕共享）、`QQ_CLIPBOARD_FIX_DISABLE=1`（剪贴板）、`QQ_WL_GEOMETRY_FIX_DISABLE=1`（共享时防闪退）、`QQ_SCREENSHOT_FIX_DISABLE=1`（截图）、`QQ_BORDER_FIX_DISABLE=1`（共享边框隐藏）。
+排查时可以单独关掉某个修复：`QQ_WL_NATIVE_DISABLE=1`（屏幕共享）、`QQ_CLIPBOARD_FIX_DISABLE=1`（剪贴板）、`QQ_WL_GEOMETRY_FIX_DISABLE=1`（共享时防闪退）、`QQ_SCREENSHOT_FIX_DISABLE=1`（截图）、`QQ_BORDER_FIX_DISABLE=1`（窗口修补：共享边框隐藏 / 截图覆盖层标题与全屏）。
 
 ## 致谢
 
