@@ -1,7 +1,7 @@
 /*
- * qq-borderfix：共享屏幕时把 QQ 的「屏幕共享」全屏边框窗口藏起来。
+ * qq-borderfix：修掉 QQ 在 Wayland 下的两个窗口问题。
  *
- * ── 现象与结论 ──
+ * ── 问题 1：共享时的「屏幕共享」全屏边框窗口 ──
  * Wayland 下发起屏幕共享后，QQ 会显示一个标题为「屏幕共享」的全屏边框窗口。
  * 它是 QQ 原生代码（标题串在 wrapper.node 里）通过 Chromium/Ozone 建的
  * Wayland toplevel：
@@ -12,28 +12,36 @@
  * 把这条 surface 的 wl_surface.attach(buffer) 原地改写成 attach(NULL)，
  * 让它永远不映射；其它窗口一律不碰。
  *
+ * ── 问题 2：截图覆盖层在平铺合成器里被当普通窗口 ──
+ * 截图窗口是 Electron 的 Wayland toplevel（app_id "QQ"、标题为空、尺寸为
+ * 屏幕大小）。这里在协议层替它补一条 xdg_toplevel.set_fullscreen，让合成器
+ * 把它精确铺满当前输出。
+ *
  * ── 实现要点 ──
  * - connect 时识别 Wayland socket 并记下 fd；一个进程可能有多条 Wayland
  *   连接（不同组件的连接对象 id 空间独立），所有状态按连接隔离；
  * - 按创建关系重建对象链：
  *     wl_display.get_registry → wl_registry.bind（载荷里带接口名字符串）
  *     → wl_compositor.create_surface → xdg_wm_base.get_xdg_surface
- *     → xdg_surface.get_toplevel → set_title / set_min_size / set_max_size
+ *     → xdg_surface.get_toplevel → set_title / set_app_id / set_min_size /
+ *       set_max_size / xdg_surface.set_window_geometry
  *   → 找到每个 xdg_toplevel 对应的 wl_surface；
- * - 判定：标题 ==「屏幕共享」，min < 600 且 max > 10000（不设限）→ 全屏边框；
+ * - 边框判定：标题 ==「屏幕共享」，min < 600 且 max > 10000（不设限）；
  *   同标题但 min == max 的固定小窗（共享预览、87x40 工具条）排除；
- * - 隐藏：把该 wl_surface 后续 attach 消息里的 buffer id 改成 0。
+ * - 覆盖层判定：app_id == "QQ"，标题为空，window_geometry ≥ 600x400；
+ * - 隐藏是原地改写 attach 的 buffer id；全屏是在消息边界上补发一条完整消息。
  *
  * ── 维护注意（踩过的坑）──
- * - 绝不向连接里注入额外消息：曾用「补发 attach(NULL)+commit」，在 sendmsg
- *   部分发送 / 携带 fd 分两次发时，会插进一条消息中间，合成器报
- *   `invalid object` 并杀死 QQ；只做原地改写；
+ * - 注入消息必须严格在「解析确认处于消息边界、且上一整块发送成功」时进行
+ *   （见 flush_injection）。曾经在不确定边界时补发 attach(NULL)+commit，
+ *   sendmsg 部分发送 / 携带 fd 分两次发时插进了半个消息中间，合成器报
+ *   `invalid object` 并杀死 QQ；
  * - sendmsg 可能只发出一部分，被切断的消息要在下次跳过，保持消息边界对齐
  *   （见 wl_skip）；
  * - libwayland 环形缓冲的 iovec 可能是 2 段，需要拼起来解析。
  *
  * ── 环境变量 ──
- *   QQ_BORDER_FIX_DISABLE=1  关掉
+ *   QQ_BORDER_FIX_DISABLE=1  关掉本库（边框隐藏 + 截图覆盖层全屏）
  *   QQ_BORDER_FIX_DEBUG=1    输出跟踪细节
  *
  * ── 如何整体删除本功能 ──
@@ -41,13 +49,15 @@
  * 2. Makefile：删 BF_LIB 定义、$(BF_LIB) 构建规则、all / install / clean 里
  *    的 $(BF_LIB)；
  * 3. linuxqq-wayland-fix.in：删 BORDERFIX_LIB 定义、preload 循环里的
- *    "$BORDERFIX_LIB"、--doctor 的「共享边框隐藏」一行、帮助头部
+ *    "$BORDERFIX_LIB"、--doctor 的对应一行、帮助头部
  *    QQ_BORDER_FIX_DISABLE 注释；
  * 4. 删 README / docs 里相关段落。
  * 以上删掉后其余修复不受影响，本库也不依赖仓库内其它代码。
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <errno.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -78,15 +88,24 @@ struct wl_object_state {
     int conn; /* 属于哪条 Wayland 连接：不同连接的对象 id 空间互相独立 */
     uint8_t iface;
     uint8_t border;
-    uint8_t has_title;
-    uint32_t surface; /* xdg_surface / xdg_toplevel 对应的 wl_surface */
+    uint8_t has_title;   /* 标题是「屏幕共享」（共享边框判定用） */
+    uint8_t title_set;   /* 调用过 set_title（截图覆盖层判定用） */
+    uint8_t app_id_set;
+    uint8_t is_overlay;  /* 已确认是截图覆盖层并请求过全屏 */
+    uint32_t surface;    /* xdg_surface / xdg_toplevel 对应的 wl_surface */
+    uint32_t xdg_surface;/* toplevel 对应的 xdg_surface 对象 id */
     int32_t min_w, min_h, max_w, max_h;
+    int32_t geom_w, geom_h; /* xdg_surface.set_window_geometry */
+    char app_id[64];
+    char title[64];
 };
 
 static struct wl_object_state wl_objects[MAX_WL_OBJECTS];
 static int wl_fds[MAX_WL_FDS];
 static int wl_fd_count;
 static size_t wl_skip[MAX_WL_FDS]; /* 部分发送后，需要跳过的消息余量 */
+static uint8_t inject_buf[MAX_WL_FDS][64]; /* 待注入的完整消息（只在消息边界发） */
+static size_t inject_len[MAX_WL_FDS];
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t io_once = PTHREAD_ONCE_INIT;
@@ -208,6 +227,76 @@ static void border_check(struct wl_object_state *o)
         o->min_w, o->min_h, o->max_w, o->max_h);
 }
 
+/* ---------------- 截图覆盖层全屏 ----------------
+ *
+ * 截图窗口是 Electron 的 Wayland toplevel：app_id "QQ"、标题为空、尺寸为
+ * 屏幕大小。平铺合成器会把它当普通窗口摆出来。这里在协议层替它补一条
+ * xdg_toplevel.set_fullscreen，让合成器把它精确铺满当前输出。
+ *
+ * 注入只在「解析确认处于消息边界、且上一整块发送成功」时进行（见
+ * flush_injection）：曾经在不确定边界时补发消息，插进了半个消息中间，
+ * 合成器报 `invalid object` 把 QQ 杀了。
+ */
+static void queue_message(int conn, const uint8_t *msg, size_t len)
+{
+    if (conn < 0 || inject_len[conn] + len > sizeof inject_buf[conn])
+        return;
+    memcpy(inject_buf[conn] + inject_len[conn], msg, len);
+    inject_len[conn] += len;
+}
+
+static void queue_fullscreen(int conn, uint32_t toplevel)
+{
+    uint8_t msg[12];
+    put_u32(msg, toplevel);
+    put_u32(msg + 4, (uint32_t)((12u << 16) | 11u)); /* xdg_toplevel.set_fullscreen */
+    put_u32(msg + 8, 0);                             /* output = NULL */
+    queue_message(conn, msg, sizeof msg);
+}
+
+static void overlay_check(struct wl_object_state *o)
+{
+    if (disabled || o->is_overlay || o->border)
+        return;
+    if (!o->app_id_set || strcmp(o->app_id, "QQ") != 0)
+        return;
+    if (o->title_set && o->title[0] != '\0')
+        return;
+    if (!(o->geom_w >= 600 && o->geom_h >= 400))
+        return;
+
+    o->is_overlay = 1;
+    queue_fullscreen(o->conn, o->id);
+    LOG("requesting fullscreen for the screenshot overlay (window %u, %dx%d)",
+        o->id, o->geom_w, o->geom_h);
+}
+
+/* 把注入消息写到 socket；调用方必须已确认 app 的流在消息边界上。 */
+static void flush_injection(int conn)
+{
+    if (conn < 0 || !inject_len[conn])
+        return;
+    int fd = wl_fds[conn];
+    while (inject_len[conn]) {
+        ssize_t w = send(fd, inject_buf[conn], inject_len[conn], MSG_NOSIGNAL);
+        if (w < 0) {
+            if (errno == EINTR)
+                continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                struct pollfd p = { fd, POLLOUT, 0 };
+                if (poll(&p, 1, 1000) > 0)
+                    continue;
+            }
+            LOG("cannot send injected wayland message: %s", strerror(errno));
+            inject_len[conn] = 0;
+            return;
+        }
+        if ((size_t)w < inject_len[conn])
+            memmove(inject_buf[conn], inject_buf[conn] + w, inject_len[conn] - (size_t)w);
+        inject_len[conn] -= (size_t)w;
+    }
+}
+
 /* ---------------- Wayland 线协议 ---------------- */
 
 static void handle_wire_request(int conn, uint32_t id, uint32_t opcode,
@@ -262,6 +351,18 @@ static void handle_wire_request(int conn, uint32_t id, uint32_t opcode,
             if (n) {
                 n->iface = IF_XDG_TOPLEVEL;
                 n->surface = o->surface;
+                n->xdg_surface = id;
+            }
+        } else if (opcode == 3 && len >= 16) { /* set_window_geometry(x, y, w, h) */
+            int32_t w = (int32_t)get_u32(args + 8);
+            int32_t h = (int32_t)get_u32(args + 12);
+            for (size_t i = 0; i < MAX_WL_OBJECTS; i++) {
+                struct wl_object_state *t = &wl_objects[i];
+                if (t->iface == IF_XDG_TOPLEVEL && t->conn == conn && t->xdg_surface == id) {
+                    t->geom_w = w;
+                    t->geom_h = h;
+                    overlay_check(t);
+                }
             }
         } else if (opcode == 0) { /* destroy */
             object_forget(conn, id);
@@ -271,18 +372,41 @@ static void handle_wire_request(int conn, uint32_t id, uint32_t opcode,
         if (opcode == 2 && len >= 4) { /* set_title(string) */
             size_t slen = get_u32(args);
             size_t padded = (slen + 3) & ~(size_t)3;
-            if (slen == sizeof("屏幕共享") && len >= 4 + padded &&
-                !memcmp(args + 4, "屏幕共享", sizeof("屏幕共享")))
-                o->has_title = 1;
+            if (slen >= 1 && len >= 4 + padded) {
+                o->title_set = 1;
+                size_t n = slen - 1;
+                if (n >= sizeof o->title)
+                    n = sizeof o->title - 1;
+                memcpy(o->title, args + 4, n);
+                o->title[n] = '\0';
+                if (slen == sizeof("屏幕共享") &&
+                    !memcmp(args + 4, "屏幕共享", sizeof("屏幕共享")))
+                    o->has_title = 1;
+            }
             border_check(o);
+            overlay_check(o);
+        } else if (opcode == 3 && len >= 4) { /* set_app_id(string) */
+            size_t slen = get_u32(args);
+            size_t padded = (slen + 3) & ~(size_t)3;
+            if (slen >= 1 && len >= 4 + padded) {
+                o->app_id_set = 1;
+                size_t n = slen - 1;
+                if (n >= sizeof o->app_id)
+                    n = sizeof o->app_id - 1;
+                memcpy(o->app_id, args + 4, n);
+                o->app_id[n] = '\0';
+            }
+            overlay_check(o);
         } else if (opcode == 7 && len >= 8) { /* set_max_size */
             o->max_w = (int32_t)get_u32(args);
             o->max_h = (int32_t)get_u32(args + 4);
             border_check(o);
+            overlay_check(o);
         } else if (opcode == 8 && len >= 8) { /* set_min_size */
             o->min_w = (int32_t)get_u32(args);
             o->min_h = (int32_t)get_u32(args + 4);
             border_check(o);
+            overlay_check(o);
         } else if (opcode == 0) { /* destroy */
             object_forget(conn, id);
         }
@@ -436,6 +560,14 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags)
     }
 
     ssize_t rc = real_sendmsg(fd, msg, flags);
+
+    /* 整块发送成功且落在消息边界上时，才把待注入消息写进去。 */
+    if (conn >= 0 && buf && rc > 0 && (size_t)rc == total) {
+        pthread_mutex_lock(&lock);
+        if (wl_skip[conn] == 0)
+            flush_injection(conn);
+        pthread_mutex_unlock(&lock);
+    }
 
     /* 部分发送把一条消息切成两半时，下次跳过它的余量，保持边界对齐。 */
     if (buf && rc > 0 && (size_t)rc < total) {
