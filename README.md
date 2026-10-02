@@ -38,7 +38,7 @@ sudo make install PREFIX=/usr
 
 ### NixOS（Flake）
 
-本仓库自带 `flake.nix`（已同步上游 v0.2.6），提供 `packages`、`overlays`、`nixosModules` 三个出口。NixOS 用户推荐直接用模块：
+本仓库自带 `flake.nix`，提供 `packages.default`、`overlays.default` 和 `nixosModules.default`。NixOS 用户推荐直接用模块：
 
 ```nix
 {
@@ -58,7 +58,7 @@ sudo make install PREFIX=/usr
 }
 ```
 
-`enable = true` 会装好修复包和 `pkgs.qq`，并把 QQ 的路径写进启动器（`QQ_WAYLAND_FIX_QQ`），之后从应用菜单打开「**QQ（Wayland修复版）**」即可。可用 `linuxqq-wayland-fix --doctor` 自检；`programs.linuxqq-wayland-fix.qq = null` 可以只装修复包、不装 QQ。
+`enable = true` 会装好修复包和 `pkgs.qq`，并把 QQ 的路径告诉启动器；之后从应用菜单打开「**QQ（Wayland修复版）**」即可，自检用 `linuxqq-wayland-fix --doctor`。只想装修复包：`programs.linuxqq-wayland-fix.qq = null`。
 
 不用模块的话：
 
@@ -67,29 +67,8 @@ nix build github:yigexuanmu/linuxqq-wayland-fix-nix
 nix develop   # 进开发环境后直接 make
 ```
 
-> `pkgs.qq` 是 unfree，flake 只在 nixpkgs 允许 unfree 时才引用它（判断 `pkgs.config.allowUnfree`）。不允许时 `packages.default` 依然能构建，但启动器要自己去 PATH 里找 QQ（`linuxqq` 或 `qq`），或读你设置的 `QQ_WAYLAND_FIX_QQ`；这种情况下 `--doctor` 的「QQ 内部实现」一节会显示找不到目录——包不知道你的 QQ 装在哪，属正常。想让 `nix build` / `nix run` 也自动带上 QQ，把 `{ allowUnfree = true; }` 写进 `~/.config/nixpkgs/config.nix`（flake 的 nixpkgs 会读这个文件）。
+打包细节都在 `nix/package.nix`：NixOS 缺少的库搜索路径、EGL 平台、Vulkan ICD 路径等都在构建期补齐，不改动上游的任何文件。
 
-> 打包时对上游启动器做了七处 NixOS 适配，都写在 `nix/package.nix` 里，不改仓库源码：三处脚本补丁（`compgen` 内建缺失、QQ 安装目录不在 `/opt/QQ`、nixpkgs 的 QQ 命令叫 `qq`）与四处运行环境——
->
-> ① 把 `pipewire` 的库目录加进 `LD_LIBRARY_PATH`。QQ 的 `broadcast-core.so` 是用 `dlopen("libpipewire-0.3.so.0")` 取 PipeWire 的，Debian/Arch 的 `/usr/lib` 本来就在默认搜索路径里，NixOS 没有全局库目录、QQ 也不自带，不补这一步屏幕共享会走到采集前就失败（不弹 portal 选择框、对方看不到画面）。
->
-> ② 在 Wayland 会话里设置 `EGL_PLATFORM=wayland`（已设置过则不动，非 Wayland 会话不设）。NixOS 的 glvnd 在没有任何平台提示时，会把 `eglGetDisplay(EGL_DEFAULT_DISPLAY)` 交给 Mesa 厂商应答，而 Mesa 驱动不了 NVIDIA 闭源驱动、只能退化成 llvmpipe 软件渲染：屏幕共享时插件进程里 12 个 `llvmpipe-*` 线程各占约 50%，合计约 5 个核（实测 484%~570%）。显式声明 Wayland 平台后，同一个调用由驱动的 EGL 应答，采集与格式转换走 GPU，同一种共享（2560×1600、`video format 8`）实测降到 22%~81%。（AMD/Intel 上 Mesa 能直接驱动硬件，这条基本是空操作。）
->
-> ③ 补上硬件编解码库路径：把 NixOS 的图形驱动聚合目录 `/run/opengl-driver/lib` 追加进 `LD_LIBRARY_PATH`，并补上 `libva`。QQ 的 `broadcast-core.so` 与系统 ffmpeg 的 `libavcodec` 都是用**裸名** `dlopen` 这些库（`libavcodec` 自身没有 RUNPATH），Arch/Debian 的 `/usr/lib` 里本来就有，所以上游没管；NixOS 没有全局库目录，这些库默认一个都加载不到。`libva` 用 nixpkgs 的通用实现，它编译时就把驱动目录设成了 `/run/opengl-driver/lib/dri`，所以三家的 VA-API 驱动都能找到。
->
-> **但要如实说明：这一条在 NVIDIA 上实测并没有换来硬件编码。** 补上之后，插件进程仍然映射 `libx264.so.165`（软件编码），`VideoEncode` 线程 62%~134%、长共享时还在 `DroppedFrame`；同一份 `LD_LIBRARY_PATH` 下 `libnvidia-encode.so.1`/`libcuda.so.1` 都能 `dlopen`、系统 ffmpeg 也带 `h264_nvenc`，但 QQ 根本没去映射它们——**用不用硬件编码是腾讯 AVSDK 自己探测决定的，补环境变量只能满足它的前置条件、不能替它做选择**。保留这个目录是为了厂商中立（AMD 的 VA-API/AMF、Intel 的 oneVPL 也从这里加载，未实测），代价只是多个兜底搜索路径。
->
-> ④ 设置 `VK_DRIVER_FILES` 指向 `/run/opengl-driver/share/vulkan/icd.d/*.json`（各家 ICD 全带上）。上游启动器只查 `VK_DRIVER_FILES`/`VK_ICD_FILENAMES`、`/usr/share/vulkan/icd.d`、`/etc/vulkan/icd.d` 与 `XDG_DATA_HOME` 下的 `icd.d`，在 NixOS 上永远探测不到 Vulkan，于是不会加 `--use-angle=vulkan`（Arch 上的默认行为，能避开部分设备上 Wayland + ANGLE 的 GLES 后端把共享画面渲染花的问题）。不想要就设 `QQ_WAYLAND_FIX_ANGLE=off`。
->
-> 三家 GPU 的硬件编解码（第 ③ 条）分别要什么：
->
-> | GPU | 硬件编解码接口 | 要额外装什么 |
-> |---|---|---|
-> | NVIDIA | NVENC / NVDEC（`libnvidia-encode.so`、`libnvcuvid.so`、`libcuda.so`） | 不用，驱动自带 |
-> | AMD | AMF（`libamfrt64.so.1`）/ VA-API | `hardware.graphics.extraPackages = [ pkgs.amf ]`（unfree） |
-> | Intel | oneVPL/QSV（`libmfx.so.1`）/ VA-API | `hardware.graphics.extraPackages = [ pkgs.vpl-gpu-rt pkgs.intel-media-driver ]` |
->
-> 放进 `hardware.graphics.extraPackages` 的包会被 NixOS 聚合到 `/run/opengl-driver/lib`，而本包正好把这个目录交给了 QQ——所以上面这些装与不装，直接决定 QQ 能不能走硬件编解码。
 
 ## 注意事项
 
