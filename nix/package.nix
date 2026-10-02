@@ -132,6 +132,13 @@ stdenv.mkDerivation (finalAttrs: {
     #   dlopen 直接失败 → Wayland 采集分支起不来（屏幕共享不弹 portal、对方无画面）。
     #   把 pipewire 的 lib 目录交给 QQ 进程即可。
     #
+    # EGL_PLATFORM：NixOS 的 glvnd 在没有任何平台提示时，会把 eglGetDisplay(EGL_DEFAULT_DISPLAY)
+    #   交给 Mesa 厂商应答；Mesa 驱动不了 NVIDIA 闭源驱动，只能退化成 llvmpipe 软件渲染。
+    #   后果是屏幕共享时插件进程里 12 个 llvmpipe 线程各占约 50%，合计约 5 个核（实测
+    #   484%~570%）；采集/转换本可在 GPU 上做。显式声明 Wayland 平台后，同一个调用由
+    #   NVIDIA 的 EGL 应答，实测同样的共享降到 22%~81%。
+    #   只在 Wayland 会话里设置，且不覆盖用户自己设定的值（X11 会话下保持原样）。
+    #
     # PATH：补上启动器与 --doctor 依赖的小工具。
     # QQ_WAYLAND_FIX_QQ：指向 pkgs.qq 的启动脚本（它会自己处理 libssh2 预加载、
     #   gsettings / GIO 模块、NIXOS_OZONE_WL 等 NixOS 上必需的运行环境）。
@@ -139,6 +146,7 @@ stdenv.mkDerivation (finalAttrs: {
     wrapProgram $out/bin/linuxqq-wayland-fix \
       --prefix PATH : ${lib.makeBinPath runtimeTools} \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ (lib.getLib pipewire) ]} \
+      --run 'if [ -z "''${EGL_PLATFORM:-}" ] && [ -n "''${WAYLAND_DISPLAY:-}" ]; then export EGL_PLATFORM=wayland; fi' \
       ${lib.optionalString (qqPackage != null) ''
         --set QQ_WAYLAND_FIX_QQ ${lib.getExe' qqPackage "qq"} \
         --set QQ_WAYLAND_FIX_QQ_ROOT "${qqPackage}/opt/QQ"

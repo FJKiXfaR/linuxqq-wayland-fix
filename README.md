@@ -69,7 +69,11 @@ nix develop   # 进开发环境后直接 make
 
 > `pkgs.qq` 是 unfree，flake 只在 nixpkgs 允许 unfree 时才引用它（判断 `pkgs.config.allowUnfree`）。不允许时 `packages.default` 依然能构建，但启动器要自己去 PATH 里找 QQ（`linuxqq` 或 `qq`），或读你设置的 `QQ_WAYLAND_FIX_QQ`；这种情况下 `--doctor` 的「QQ 内部实现」一节会显示找不到目录——包不知道你的 QQ 装在哪，属正常。想让 `nix build` / `nix run` 也自动带上 QQ，把 `{ allowUnfree = true; }` 写进 `~/.config/nixpkgs/config.nix`（flake 的 nixpkgs 会读这个文件）。
 
-> 打包时对上游启动器做了四处 NixOS 适配，都写在 `nix/package.nix` 里，不改仓库源码：三处脚本补丁（`compgen` 内建缺失、QQ 安装目录不在 `/opt/QQ`、nixpkgs 的 QQ 命令叫 `qq`），以及一处运行环境——把 `pipewire` 的库目录加进 `LD_LIBRARY_PATH`。QQ 的 `broadcast-core.so` 是用 `dlopen("libpipewire-0.3.so.0")` 取 PipeWire 的，Debian/Arch 的 `/usr/lib` 本来就在默认搜索路径里，NixOS 没有全局库目录、QQ 也不自带，不补这一步屏幕共享会走到采集前就失败（不弹 portal 选择框、对方看不到画面）。
+> 打包时对上游启动器做了五处 NixOS 适配，都写在 `nix/package.nix` 里，不改仓库源码：三处脚本补丁（`compgen` 内建缺失、QQ 安装目录不在 `/opt/QQ`、nixpkgs 的 QQ 命令叫 `qq`），以及两处运行环境——
+>
+> ① 把 `pipewire` 的库目录加进 `LD_LIBRARY_PATH`。QQ 的 `broadcast-core.so` 是用 `dlopen("libpipewire-0.3.so.0")` 取 PipeWire 的，Debian/Arch 的 `/usr/lib` 本来就在默认搜索路径里，NixOS 没有全局库目录、QQ 也不自带，不补这一步屏幕共享会走到采集前就失败（不弹 portal 选择框、对方看不到画面）。
+>
+> ② 在 Wayland 会话里设置 `EGL_PLATFORM=wayland`（已设置过则不动，非 Wayland 会话不设）。NixOS 的 glvnd 在没有任何平台提示时，会把 `eglGetDisplay(EGL_DEFAULT_DISPLAY)` 交给 Mesa 厂商应答，而 Mesa 驱动不了 NVIDIA 闭源驱动、只能退化成 llvmpipe 软件渲染：屏幕共享时插件进程里 12 个 `llvmpipe-*` 线程各占约 50%，合计约 5 个核（实测 484%~570%）。显式声明 Wayland 平台后，同一个调用由 NVIDIA 的 EGL 应答，采集与格式转换走 GPU，同一种共享（2560×1600、`video format 8`）实测降到 22%~81%。
 
 ## 注意事项
 
