@@ -2,6 +2,8 @@
 
 修复 Linux QQ 以 **Wayland** 运行时的屏幕分享、剪贴板和截图异常。
 
+📺 一分钟视频介绍：[B 站](https://www.bilibili.com/video/BV__________)
+
 >本项目接替 linuxqq-wayland-native-screenshare-fix 和 [linuxqq-clipsync](https://github.com/SHORiN-KiWATA/linuxqq-clipsync)。
 
 ## 安装
@@ -87,7 +89,8 @@ XWayaland需要正常工作；
 - 使用 Easy Effects 时，需在它的「输入」「输出」排除名单里都加上 `TRAE`，否则 QQ 一开通话/共享就会崩；
 - 不要同时运行 linuxqq-clipsync 等其它剪贴板同步工具；
 - 截图窗口在 niri 等平铺式合成器上会被平铺，画面重复显示；KDE、GNOME 下截图背景是黑的；
-- 共享时 QQ 的全屏蓝色边框会变成一个真实窗口；流畅度取决于 QQ 自己的编码。
+- 共享时 QQ 的全屏蓝色边框会变成一个真实窗口；流畅度取决于 QQ 自己的编码；
+- 观看别人共享时画面可能花成横竖条纹：Wayland 下 ANGLE 的 GLES 后端模拟 `GL_LUMINANCE` 纹理有问题，启动器检测到 Vulkan 时会自动用 `--use-angle=vulkan` 规避；没有 Vulkan 时可设 `QQ_WAYLAND_FIX_ANGLE=swiftshader`（较慢）。详见 [原理详解](docs/原理详解.md#附观看共享花屏)。
 
 详细说明见 [常见问题与排错](docs/常见问题与排错.md)。
 

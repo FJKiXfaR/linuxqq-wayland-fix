@@ -9,6 +9,7 @@
 # 环境变量：
 #   QQ_WAYLAND_FIX_QQ         QQ 的启动命令（默认先找 PATH 里的 linuxqq，再找 /opt/QQ/qq）
 #   QQ_WAYLAND_FIX_LOG        日志文件（默认 $XDG_RUNTIME_DIR/linuxqq-wayland-fix.log）
+#   QQ_WAYLAND_FIX_ANGLE      ANGLE 后端：auto（默认，检测到 Vulkan 时用 vulkan）| vulkan | swiftshader | off
 #   QQ_WL_NATIVE_DISABLE=1    关闭屏幕共享修复（排查问题用）
 #   QQ_CLIPBOARD_FIX_DISABLE=1 关闭剪贴板修复（排查问题用）
 #   QQ_SCREENSHOT_FIX_DISABLE=1 关闭截图防闪退（排查问题用）
@@ -58,6 +59,37 @@ qq_main_pid() {
     done
 }
 
+# 系统里有没有可用的 Vulkan 驱动（ICD 声明）。
+vulkan_available() {
+    local f
+    local env_files="${VK_DRIVER_FILES:-${VK_ICD_FILENAMES:-}}"
+    if [[ -n "$env_files" ]]; then
+        local IFS=':'
+        for f in $env_files; do
+            [[ -f "$f" ]] && return 0
+        done
+    fi
+    for f in /usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json \
+             "${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/icd.d"/*.json; do
+        [[ -f "$f" ]] && return 0
+    done
+    return 1
+}
+
+# ANGLE 后端：auto（默认，检测到 Vulkan 就用 vulkan）| vulkan | swiftshader | off。
+# 部分设备上 Wayland + ANGLE 的 GLES 后端会把屏幕共享画面渲染花，
+# 换用 Vulkan 后端可避开；没有 Vulkan 时可以手动选 swiftshader（软件，慢）。
+angle_mode() {
+    case "${QQ_WAYLAND_FIX_ANGLE:-auto}" in
+        auto)
+            if vulkan_available; then echo vulkan; else echo none; fi
+            ;;
+        vulkan | swiftshader) echo "${QQ_WAYLAND_FIX_ANGLE}" ;;
+        off | default | none | "") echo none ;;
+        *) echo none ;;
+    esac
+}
+
 # 当前生效的 QQ 版本目录：热更新版本优先，否则用安装目录。
 qq_version_dir() {
     local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/QQ/versions" cur=""
@@ -87,6 +119,11 @@ doctor() {
     [[ -r "$SCREENSHOT_LIB" ]] && pass "截图防闪退: $SCREENSHOT_LIB" || bad "找不到 $SCREENSHOT_LIB"
     [[ -n "${WAYLAND_DISPLAY:-}" ]] && pass "Wayland 会话: $WAYLAND_DISPLAY" || note "WAYLAND_DISPLAY 为空，不在 Wayland 会话里？"
     [[ -n "${DISPLAY:-}" ]] && pass "XWayland: $DISPLAY" || bad "DISPLAY 为空：QQ 的界面与剪贴板仍需要 XWayland"
+    case "$(angle_mode)" in
+        vulkan) pass "ANGLE 后端: vulkan（检测到 Vulkan，可规避观看共享花屏）" ;;
+        swiftshader) note "ANGLE 后端: swiftshader（软件渲染，较慢，由 QQ_WAYLAND_FIX_ANGLE 指定）" ;;
+        none) note "ANGLE 后端: 默认；若观看共享花屏，可设 QQ_WAYLAND_FIX_ANGLE=swiftshader（较慢）或改用 X11，见 docs/原理详解.md#附观看共享花屏" ;;
+    esac
 
     echo
     echo "[QQ 内部实现（QQ 更新后用来判断修复是否还适用）]"
@@ -221,7 +258,7 @@ doctor() {
 case "${1:-}" in
     --doctor) doctor; exit $? ;;
     --version) echo "linuxqq-wayland-fix $VERSION"; exit 0 ;;
-    --help|-h) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help|-h) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 QQ=$(find_qq)
@@ -243,6 +280,12 @@ export LD_PRELOAD="$preload${LD_PRELOAD:+:$LD_PRELOAD}"
 export XDG_SESSION_TYPE=x11
 export MESA_SHADER_CACHE_DISABLE="${MESA_SHADER_CACHE_DISABLE:-true}"
 
+angle_arg=()
+case "$(angle_mode)" in
+    vulkan) angle_arg=(--use-angle=vulkan) ;;
+    swiftshader) angle_arg=(--use-angle=swiftshader) ;;
+esac
+
 keep_crash_records
-{ echo "=== linuxqq-wayland-fix $VERSION $(date '+%F %T') $QQ $*"; } >"$LOG" 2>/dev/null || LOG=/dev/null
-exec "$QQ" --ozone-platform=wayland "$@" >>"$LOG" 2>&1
+{ echo "=== linuxqq-wayland-fix $VERSION $(date '+%F %T') $QQ $* angle=$(angle_mode)"; } >"$LOG" 2>/dev/null || LOG=/dev/null
+exec "$QQ" --ozone-platform=wayland "${angle_arg[@]}" "$@" >>"$LOG" 2>&1
