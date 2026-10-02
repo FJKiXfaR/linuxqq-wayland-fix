@@ -29,12 +29,13 @@ CB_LIBS    := $(shell $(PKG_CONFIG) --libs x11 wayland-client)
 SS_LIB     := libqq-wl-portal.so
 CB_LIB     := libqq-clipbridge.so
 SH_LIB     := libqq-screenshot.so
+BF_LIB     := libqq-borderfix.so
 CMD        := $(NAME)
 CB_PROTOCOLS := ext-data-control-v1 wlr-data-control-unstable-v1
 CB_GEN_H   := $(CB_PROTOCOLS:%=build/%-client-protocol.h)
 CB_GEN_C   := $(CB_PROTOCOLS:%=build/%-protocol.c)
 
-all: $(SS_LIB) $(CB_LIB) $(SH_LIB) $(CMD)
+all: $(SS_LIB) $(CB_LIB) $(SH_LIB) $(BF_LIB) $(CMD)
 
 build/qq-wl-portal.o: src/qq-wl-portal.c
 	@mkdir -p build
@@ -65,6 +66,11 @@ $(SH_LIB): src/qq-screenshot.c build/wlr-screencopy-unstable-v1-client-protocol.
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -Wall -Wextra -Ibuild $(CB_CFLAGS) \
 	    $(LDFLAGS) -shared -Wl,-z,defs -o $@ src/qq-screenshot.c build/wlr-screencopy-unstable-v1-protocol.c $(CB_LIBS) -ldl
 
+# 共享边框隐藏：socket 层拦 Wayland 出站流量，把「屏幕共享」全屏边框的 buffer 摘掉
+$(BF_LIB): src/qq-borderfix.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -Wall -Wextra \
+	    $(LDFLAGS) -shared -Wl,-z,defs -o $@ src/qq-borderfix.c -lpthread -ldl
+
 $(CMD): $(CMD).in
 	sed -e 's|@LIBEXECDIR@|$(LIBEXECDIR)|g' -e 's|@VERSION@|$(VERSION)|g' $< > $@
 	chmod +x $@
@@ -73,6 +79,7 @@ install: all
 	install -Dm755 $(SS_LIB)         $(DESTDIR)$(LIBEXECDIR)/$(SS_LIB)
 	install -Dm755 $(CB_LIB)         $(DESTDIR)$(LIBEXECDIR)/$(CB_LIB)
 	install -Dm755 $(SH_LIB)         $(DESTDIR)$(LIBEXECDIR)/$(SH_LIB)
+	install -Dm755 $(BF_LIB)         $(DESTDIR)$(LIBEXECDIR)/$(BF_LIB)
 	install -Dm755 $(CMD)            $(DESTDIR)$(BINDIR)/$(CMD)
 	install -Dm644 $(CMD).desktop    $(DESTDIR)$(DATADIR)/applications/$(CMD).desktop
 	install -Dm644 README.md         $(DESTDIR)$(DOCDIR)/README.md
@@ -80,7 +87,7 @@ install: all
 	install -Dm644 LICENSE           $(DESTDIR)$(DATADIR)/licenses/$(NAME)/LICENSE
 
 clean:
-	rm -rf build src/*.o $(SS_LIB) $(CB_LIB) $(SH_LIB) $(CMD)
+	rm -rf build src/*.o $(SS_LIB) $(CB_LIB) $(SH_LIB) $(BF_LIB) $(CMD)
 
 print-version:
 	@echo $(VERSION)

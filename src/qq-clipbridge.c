@@ -13,6 +13,11 @@
  * 只在 QQ 主进程（/proc/self/exe 为 qq 且没有 --type=）、且 QQ 以原生 Wayland 运行时启用：
  * QQ 跑在 XWayland 下时，XWayland / xwayland-satellite 自己会同步剪贴板，再桥接会重复。
  *
+ * 另外：QQ 的 Chromium Wayland 剪贴板数据源向粘贴方的管道 write() 时没有屏蔽
+ * SIGPIPE；读端提前关闭时（读端可能是任何程序），Bugly 会把 SIGPIPE 当致命错误
+ * 直接杀掉整个 QQ。这里把 SIGPIPE 强制为忽略：写失败只返回 EPIPE，Chromium 自己
+ * 会记录并清理。
+ *
  * Wayland 侧优先使用 ext-data-control-v1，没有时退回 wlr-data-control-unstable-v1。
  * 两者的请求和事件完全一致，只有「创建对象」的两个请求需要区分协议；
  * 其余调用都用 ext 的函数，libwayland 按对象自身的接口编码消息，对 wlr 对象同样正确。
@@ -700,6 +705,23 @@ static void dev_primary(void *d, struct ext_data_control_device_v1 *dev,
         info_free(ext_data_control_offer_v1_get_user_data(offer));
 }
 
+/* 提前放弃读取时，把 fd 交给后台线程读到 EOF 再关：
+ * 否则数据源的下一次 write() 会拿到 EPIPE/SIGPIPE（见文件头 SIGPIPE 说明）。 */
+static void *drain_fd(void *arg)
+{
+    int fd = (int)(intptr_t)arg;
+    char tmp[65536];
+    for (;;) {
+        ssize_t r = read(fd, tmp, sizeof tmp);
+        if (r < 0 && errno == EINTR)
+            continue;
+        if (r <= 0)
+            break;
+    }
+    close(fd);
+    return NULL;
+}
+
 /* 从当前 Wayland 内容读取某个 MIME 的数据。 */
 static long wl_receive(const char *mime, unsigned char **out)
 {
@@ -715,22 +737,58 @@ static long wl_receive(const char *mime, unsigned char **out)
 
     size_t cap = 65536, len = 0;
     unsigned char *buf = malloc(cap);
+    if (!buf) {
+        close(fds[0]);
+        return -1;
+    }
+    int abort_read = 0;
     for (;;) {
         struct pollfd p = { fds[0], POLLIN, 0 };
-        if (poll(&p, 1, 3000) <= 0)
+        int pr = poll(&p, 1, 30000);
+        if (pr < 0) {
+            if (errno == EINTR)
+                continue;
+            abort_read = 1;
             break;
-        if (len + 65536 > cap)
-            buf = realloc(buf, cap *= 2);
+        }
+        if (pr == 0) { /* 30 秒没有新数据：源不正常，余量交给 drain 线程 */
+            abort_read = 1;
+            break;
+        }
+        if (len + 65536 > cap) {
+            size_t ncap = cap * 2;
+            unsigned char *nb = realloc(buf, ncap);
+            if (!nb) {
+                abort_read = 1;
+                break;
+            }
+            buf = nb;
+            cap = ncap;
+        }
         ssize_t r = read(fds[0], buf + len, cap - len);
-        if (r < 0 && errno == EINTR)
-            continue;
-        if (r <= 0)
+        if (r < 0) {
+            if (errno == EINTR)
+                continue;
+            abort_read = 1;
             break;
+        }
+        if (r == 0)
+            break; /* EOF：正常结束 */
         len += r;
     }
-    close(fds[0]);
+
+    if (abort_read) {
+        pthread_t t;
+        if (pthread_create(&t, NULL, drain_fd, (void *)(intptr_t)fds[0]) == 0)
+            pthread_detach(t);
+        else
+            close(fds[0]);
+        LOG("wayland receive %s: stopped after %zu bytes, draining the rest", mime, len);
+    } else {
+        close(fds[0]);
+    }
     *out = buf;
-    return len;
+    return (long)len;
 }
 
 static int is_text_name(const char *n)
@@ -1107,6 +1165,38 @@ int XSetSelectionOwner(Display *dpy, Atom selection, Window owner, Time t)
     return r;
 }
 
+/* ---------------- SIGPIPE 防护 ----------------
+ *
+ * QQ 的 Chromium Wayland 剪贴板数据源向粘贴方的管道 write() 时没有屏蔽 SIGPIPE；
+ * 读端提前关闭时（读端可能是任何程序），Bugly 的处理器会把 SIGPIPE 当致命错误
+ * 直接杀掉整个 QQ（日志：fatalHandler signo: 13，栈在 __write）。
+ * 这里在信号处置层面把 SIGPIPE 强制为忽略：写失败只返回 EPIPE，由写端自己处理。
+ */
+static sighandler_t (*real_signal_fn)(int, sighandler_t);
+static int (*real_sigaction_fn)(int, const struct sigaction *, struct sigaction *);
+
+sighandler_t signal(int signum, sighandler_t handler)
+{
+    if (!real_signal_fn)
+        real_signal_fn = dlsym(RTLD_NEXT, "signal");
+    if (enabled && signum == SIGPIPE && handler != SIG_IGN)
+        handler = SIG_IGN;
+    return real_signal_fn(signum, handler);
+}
+
+int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact)
+{
+    if (!real_sigaction_fn)
+        real_sigaction_fn = dlsym(RTLD_NEXT, "sigaction");
+    if (enabled && signum == SIGPIPE && act && act->sa_handler != SIG_IGN) {
+        struct sigaction ign = *act;
+        ign.sa_handler = SIG_IGN;
+        ign.sa_flags &= ~(SA_RESETHAND | SA_NODEFER);
+        return real_sigaction_fn(signum, &ign, oldact);
+    }
+    return real_sigaction_fn(signum, act, oldact);
+}
+
 __attribute__((constructor))
 static void init(void)
 {
@@ -1124,5 +1214,6 @@ static void init(void)
     if (pthread_create(&t, NULL, worker, NULL) == 0) {
         pthread_detach(t);
         enabled = 1;
+        signal(SIGPIPE, SIG_IGN);
     }
 }
