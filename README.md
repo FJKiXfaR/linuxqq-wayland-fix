@@ -131,10 +131,13 @@ grep -E 'qq-wl-portal|qq-clipbridge' "$XDG_RUNTIME_DIR/linuxqq-wayland-fix.log"
 
 ## 致谢
 
-[littlekan233/qq-wayland-screenshare](https://github.com/littlekan233/qq-wayland-screenshare)、[xuwd1/wemeet-wayland-screenshare](https://github.com/xuwd1/wemeet-wayland-screenshare)：「截屏中转」思路的先行者。本项目采用了不同的方法，不包含它们的代码。
+[littlekan233/qq-wayland-screenshare](https://github.com/littlekan233/qq-wayland-screenshare) [xuwd1/wemeet-wayland-screenshare](https://github.com/xuwd1/wemeet-wayland-screenshare)：「截屏中转」思路的先行者。本项目采用了不同的方法，不包含它们的代码。
 
 [@YoungJurry](https://github.com/YoungJurry) 定位了显示器坐标偏移时共享闪退的问题（#1、#2）。
+
+[Linux Do](https://linux.do/) 中文 Linux 社区。
 
 ## 许可证
 
 MIT。`protocol/` 下的协议描述文件保留其原有版权声明。
+
