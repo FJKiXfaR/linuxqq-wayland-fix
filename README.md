@@ -67,6 +67,8 @@ sudo make install PREFIX=/usr
 | 截图     | 合成器支持 `wlr-screencopy-unstable-v1`：niri、Hyprland、sway、labwc 等；KDE、GNOME 下截图背景是黑的（不会闪退）                                 |
 | XWayland | 需要（QQ 的界面流程和剪贴板仍是 X11）                                                                                                            |
 
+kde plasma上运行异常，暂不支持。
+
 ## 已知问题
 
 - 使用 Easy Effects 时，需在它的「输入」「输出」排除名单里都加上 `TRAE`，否则 QQ 一开通话/共享就会崩；
