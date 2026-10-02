@@ -75,7 +75,9 @@ nix develop   # 进开发环境后直接 make
 >
 > ② 在 Wayland 会话里设置 `EGL_PLATFORM=wayland`（已设置过则不动，非 Wayland 会话不设）。NixOS 的 glvnd 在没有任何平台提示时，会把 `eglGetDisplay(EGL_DEFAULT_DISPLAY)` 交给 Mesa 厂商应答，而 Mesa 驱动不了 NVIDIA 闭源驱动、只能退化成 llvmpipe 软件渲染：屏幕共享时插件进程里 12 个 `llvmpipe-*` 线程各占约 50%，合计约 5 个核（实测 484%~570%）。显式声明 Wayland 平台后，同一个调用由驱动的 EGL 应答，采集与格式转换走 GPU，同一种共享（2560×1600、`video format 8`）实测降到 22%~81%。（AMD/Intel 上 Mesa 能直接驱动硬件，这条基本是空操作。）
 >
-> ③ 补上硬件编解码库路径：把 NixOS 的图形驱动聚合目录 `/run/opengl-driver/lib` 追加进 `LD_LIBRARY_PATH`，并补上 `libva`。QQ 的 `broadcast-core.so` 与系统 ffmpeg 的 `libavcodec` 都是用**裸名** `dlopen` 这些库（`libavcodec` 自身没有 RUNPATH），Arch/Debian 的 `/usr/lib` 里本来就有，所以上游没管；NixOS 没有全局库目录，不补这一步采集帧只能落到 `broadcast-core.so` 自带的软件编码器（Openh264），屏幕共享会一直占满一两个核。`libva` 用 nixpkgs 的通用实现，它编译时就把驱动目录设成了 `/run/opengl-driver/lib/dri`，所以三家的 VA-API 驱动都能找到。
+> ③ 补上硬件编解码库路径：把 NixOS 的图形驱动聚合目录 `/run/opengl-driver/lib` 追加进 `LD_LIBRARY_PATH`，并补上 `libva`。QQ 的 `broadcast-core.so` 与系统 ffmpeg 的 `libavcodec` 都是用**裸名** `dlopen` 这些库（`libavcodec` 自身没有 RUNPATH），Arch/Debian 的 `/usr/lib` 里本来就有，所以上游没管；NixOS 没有全局库目录，这些库默认一个都加载不到。`libva` 用 nixpkgs 的通用实现，它编译时就把驱动目录设成了 `/run/opengl-driver/lib/dri`，所以三家的 VA-API 驱动都能找到。
+>
+> **但要如实说明：这一条在 NVIDIA 上实测并没有换来硬件编码。** 补上之后，插件进程仍然映射 `libx264.so.165`（软件编码），`VideoEncode` 线程 62%~134%、长共享时还在 `DroppedFrame`；同一份 `LD_LIBRARY_PATH` 下 `libnvidia-encode.so.1`/`libcuda.so.1` 都能 `dlopen`、系统 ffmpeg 也带 `h264_nvenc`，但 QQ 根本没去映射它们——**用不用硬件编码是腾讯 AVSDK 自己探测决定的，补环境变量只能满足它的前置条件、不能替它做选择**。保留这个目录是为了厂商中立（AMD 的 VA-API/AMF、Intel 的 oneVPL 也从这里加载，未实测），代价只是多个兜底搜索路径。
 >
 > ④ 设置 `VK_DRIVER_FILES` 指向 `/run/opengl-driver/share/vulkan/icd.d/*.json`（各家 ICD 全带上）。上游启动器只查 `VK_DRIVER_FILES`/`VK_ICD_FILENAMES`、`/usr/share/vulkan/icd.d`、`/etc/vulkan/icd.d` 与 `XDG_DATA_HOME` 下的 `icd.d`，在 NixOS 上永远探测不到 Vulkan，于是不会加 `--use-angle=vulkan`（Arch 上的默认行为，能避开部分设备上 Wayland + ANGLE 的 GLES 后端把共享画面渲染花的问题）。不想要就设 `QQ_WAYLAND_FIX_ANGLE=off`。
 >
