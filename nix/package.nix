@@ -61,7 +61,8 @@ stdenv.mkDerivation (finalAttrs: {
     libx11
   ]
   # 上游只用 libpulse / libpipewire 的头文件，注入库运行时不链接它们，
-  # 所以只取 dev 输出，不把这两个库带进闭包。
+  # 所以这里只取 dev 输出。（libpipewire 的运行库在 postFixup 里通过
+  # LD_LIBRARY_PATH 交给 QQ 进程，不是给注入库链接用的。）
   ++ map lib.getDev [
     libpulseaudio
     pipewire
@@ -124,12 +125,20 @@ stdenv.mkDerivation (finalAttrs: {
         command -v qq
 '
 
+    # LD_LIBRARY_PATH：QQ 的 resources/app/avsdk/broadcast-core.so 是
+    #   dlopen("libpipewire-0.3.so.0") + dlsym("pw_context_connect_fd") 来取 PipeWire 的，
+    #   它自己的 RUNPATH 与 QQ bundle 里都没有 libpipewire。Debian/Arch 上 /usr/lib 本来
+    #   就在默认搜索路径里，所以上游没管；NixOS 没有全局库目录、ld.so.cache 里也没有，
+    #   dlopen 直接失败 → Wayland 采集分支起不来（屏幕共享不弹 portal、对方无画面）。
+    #   把 pipewire 的 lib 目录交给 QQ 进程即可。
+    #
     # PATH：补上启动器与 --doctor 依赖的小工具。
     # QQ_WAYLAND_FIX_QQ：指向 pkgs.qq 的启动脚本（它会自己处理 libssh2 预加载、
     #   gsettings / GIO 模块、NIXOS_OZONE_WL 等 NixOS 上必需的运行环境）。
     # QQ_WAYLAND_FIX_QQ_ROOT：上面第 2 个补丁用到的 QQ 安装目录。
     wrapProgram $out/bin/linuxqq-wayland-fix \
       --prefix PATH : ${lib.makeBinPath runtimeTools} \
+      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ (lib.getLib pipewire) ]} \
       ${lib.optionalString (qqPackage != null) ''
         --set QQ_WAYLAND_FIX_QQ ${lib.getExe' qqPackage "qq"} \
         --set QQ_WAYLAND_FIX_QQ_ROOT "${qqPackage}/opt/QQ"
