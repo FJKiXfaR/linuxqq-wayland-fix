@@ -38,6 +38,7 @@ Open "QQ（Wayland修复版）" from the application menu.
 %files
 %license %{_datadir}/licenses/%{srcname}/LICENSE
 %doc %{_docdir}/%{srcname}/README.md
+%doc %{_docdir}/%{srcname}/docs
 %{_bindir}/linuxqq-wayland-fix
 %{_libdir}/%{srcname}/
 %{_datadir}/applications/linuxqq-wayland-fix.desktop

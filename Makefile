@@ -76,6 +76,7 @@ install: all
 	install -Dm755 $(CMD)            $(DESTDIR)$(BINDIR)/$(CMD)
 	install -Dm644 $(CMD).desktop    $(DESTDIR)$(DATADIR)/applications/$(CMD).desktop
 	install -Dm644 README.md         $(DESTDIR)$(DOCDIR)/README.md
+	for f in docs/*.md; do install -Dm644 "$$f" "$(DESTDIR)$(DOCDIR)/$$f"; done
 	install -Dm644 LICENSE           $(DESTDIR)$(DATADIR)/licenses/$(NAME)/LICENSE
 
 clean:
