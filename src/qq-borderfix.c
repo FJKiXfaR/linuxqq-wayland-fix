@@ -18,6 +18,11 @@
  * 和一条 xdg_toplevel.set_fullscreen，前者方便合成器窗口规则匹配，后者
  * 让合成器把它精确铺满当前输出。
  *
+ * ── 问题 3：QQ 的提示条（如「正在使用…作为您的麦克风」）──
+ * 这类提示是 app_id "QQ"、标题「提示」的宽扁小窗口（实测 1200x64）。
+ * 这里在协议层把它的绘制缓冲摘掉，已经映射出来的再补一条 attach(NULL)。
+ * 尺寸限制（高 ≤128、宽 ≥400）避免误伤同名的正常对话框。
+ *
  * ── 实现要点 ──
  * - connect 时识别 Wayland socket 并记下 fd；一个进程可能有多条 Wayland
  *   连接（不同组件的连接对象 id 空间独立），所有状态按连接隔离；
@@ -42,7 +47,7 @@
  * - libwayland 环形缓冲的 iovec 可能是 2 段，需要拼起来解析。
  *
  * ── 环境变量 ──
- *   QQ_BORDER_FIX_DISABLE=1  关掉本库（边框隐藏 + 截图覆盖层全屏）
+ *   QQ_BORDER_FIX_DISABLE=1  关掉本库（边框隐藏 + 截图覆盖层全屏 + 提示条隐藏）
  *   QQ_BORDER_FIX_DEBUG=1    输出跟踪细节
  *
  * ── 如何整体删除本功能 ──
@@ -89,8 +94,10 @@ struct wl_object_state {
     int conn; /* 属于哪条 Wayland 连接：不同连接的对象 id 空间互相独立 */
     uint8_t iface;
     uint8_t border;
+    uint8_t hide;        /* 该 wl_surface 的 attach 要改成 NULL */
+    uint8_t hidden;      /* 该 toplevel 已经处理过隐藏（避免重复） */
     uint8_t has_title;   /* 标题是「屏幕共享」（共享边框判定用） */
-    uint8_t title_set;   /* 调用过 set_title（截图覆盖层判定用） */
+    uint8_t title_set;   /* 调用过 set_title（截图覆盖层/通知判定用） */
     uint8_t app_id_set;
     uint8_t is_overlay;  /* 已确认是截图覆盖层并请求过全屏 */
     uint32_t surface;    /* xdg_surface / xdg_toplevel 对应的 wl_surface */
@@ -272,6 +279,44 @@ static void queue_title(int conn, uint32_t toplevel, const char *title)
     inject_len[conn] += size;
 }
 
+/* 补一条 attach(NULL)+commit，把已经映射出来的窗口撤下去。 */
+static void queue_unmap(int conn, uint32_t surface)
+{
+    uint8_t msg[32];
+    put_u32(msg, surface);
+    put_u32(msg + 4, (uint32_t)((20u << 16) | 1u)); /* wl_surface.attach */
+    put_u32(msg + 8, 0);
+    put_u32(msg + 12, 0);
+    put_u32(msg + 16, 0);
+    put_u32(msg + 20, surface);
+    put_u32(msg + 24, (uint32_t)((12u << 16) | 6u)); /* wl_surface.commit */
+    queue_message(conn, msg, sizeof msg);
+}
+
+/*
+ * QQ 的麦克风设备提示条：app_id "QQ"、标题「提示」、宽扁小条
+ * （实测 1200x64）。捡到就摘掉它的绘制缓冲；已经映射出来的补一条 unmap。
+ * 尺寸限制是为了不误伤同名的正常对话框。
+ */
+static void notification_check(struct wl_object_state *o)
+{
+    if (disabled || o->hidden || o->border || o->is_overlay)
+        return;
+    if (!o->app_id_set || strcmp(o->app_id, "QQ") != 0)
+        return;
+    if (!o->title_set || strcmp(o->title, "提示") != 0)
+        return;
+    if (!(o->geom_w >= 400 && o->geom_h > 0 && o->geom_h <= 128))
+        return;
+
+    o->hidden = 1;
+    struct wl_object_state *surf = object_state(o->conn, o->surface, 0);
+    if (surf)
+        surf->hide = 1;
+    queue_unmap(o->conn, o->surface);
+    LOG("hiding QQ notification window (提示, %dx%d)", o->geom_w, o->geom_h);
+}
+
 static void overlay_check(struct wl_object_state *o)
 {
     if (disabled || o->is_overlay || o->border)
@@ -381,6 +426,7 @@ static void handle_wire_request(int conn, uint32_t id, uint32_t opcode,
                     t->geom_w = w;
                     t->geom_h = h;
                     overlay_check(t);
+                    notification_check(t);
                 }
             }
         } else if (opcode == 0) { /* destroy */
@@ -404,6 +450,7 @@ static void handle_wire_request(int conn, uint32_t id, uint32_t opcode,
             }
             border_check(o);
             overlay_check(o);
+            notification_check(o);
         } else if (opcode == 3 && len >= 4) { /* set_app_id(string) */
             size_t slen = get_u32(args);
             size_t padded = (slen + 3) & ~(size_t)3;
@@ -416,22 +463,25 @@ static void handle_wire_request(int conn, uint32_t id, uint32_t opcode,
                 o->app_id[n] = '\0';
             }
             overlay_check(o);
+            notification_check(o);
         } else if (opcode == 7 && len >= 8) { /* set_max_size */
             o->max_w = (int32_t)get_u32(args);
             o->max_h = (int32_t)get_u32(args + 4);
             border_check(o);
             overlay_check(o);
+            notification_check(o);
         } else if (opcode == 8 && len >= 8) { /* set_min_size */
             o->min_w = (int32_t)get_u32(args);
             o->min_h = (int32_t)get_u32(args + 4);
             border_check(o);
             overlay_check(o);
+            notification_check(o);
         } else if (opcode == 0) { /* destroy */
             object_forget(conn, id);
         }
         break;
     case IF_SURFACE:
-        if (opcode == 1 && o->border) { /* attach(buffer, x, y) -> attach(NULL) */
+        if (opcode == 1 && (o->border || o->hide)) { /* attach(buffer, x, y) -> attach(NULL) */
             if (len >= 12 && get_u32(args) != 0)
                 put_u32(args, 0);
         } else if (opcode == 0) { /* destroy */
