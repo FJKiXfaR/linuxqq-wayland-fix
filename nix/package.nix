@@ -139,6 +139,14 @@ stdenv.mkDerivation (finalAttrs: {
     #   NVIDIA 的 EGL 应答，实测同样的共享降到 22%~81%。
     #   只在 Wayland 会话里设置，且不覆盖用户自己设定的值（X11 会话下保持原样）。
     #
+    # NVIDIA 驱动库目录：broadcast-core.so / avsdk / 系统 ffmpeg 都靠裸名 dlopen 硬件编码
+    #   解码库（libnvidia-encode.so、libnvcuvid.so、libcuda.so），libavcodec 自身没有 RUNPATH，
+    #   只能靠 LD_LIBRARY_PATH 与 ld.so.cache。Arch/Debian 的 /usr/lib 本来就在搜索路径里，
+    #   所以上游没管；NixOS 的驱动库只在 /run/opengl-driver/lib。不补这一步，采集帧就只能
+    #   走软件编码（broadcast-core.so 里 NVENC 与 Openh264 两个编码器，目前只能落到后者）。
+    #   追加到末尾（不是开头）：该目录顶层没有 libGL/libEGL/libgbm/libvulkan 这些加载器，
+    #   放末尾既能让 NVIDIA 自家的库兜底命中，又不会遮蔽前面的 store/系统库。
+    #
     # PATH：补上启动器与 --doctor 依赖的小工具。
     # QQ_WAYLAND_FIX_QQ：指向 pkgs.qq 的启动脚本（它会自己处理 libssh2 预加载、
     #   gsettings / GIO 模块、NIXOS_OZONE_WL 等 NixOS 上必需的运行环境）。
@@ -146,6 +154,7 @@ stdenv.mkDerivation (finalAttrs: {
     wrapProgram $out/bin/linuxqq-wayland-fix \
       --prefix PATH : ${lib.makeBinPath runtimeTools} \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ (lib.getLib pipewire) ]} \
+      --suffix LD_LIBRARY_PATH : /run/opengl-driver/lib \
       --run 'if [ -z "''${EGL_PLATFORM:-}" ] && [ -n "''${WAYLAND_DISPLAY:-}" ]; then export EGL_PLATFORM=wayland; fi' \
       ${lib.optionalString (qqPackage != null) ''
         --set QQ_WAYLAND_FIX_QQ ${lib.getExe' qqPackage "qq"} \
