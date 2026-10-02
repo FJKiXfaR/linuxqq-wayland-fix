@@ -14,8 +14,9 @@
  *
  * ── 问题 2：截图覆盖层在平铺合成器里被当普通窗口 ──
  * 截图窗口是 Electron 的 Wayland toplevel（app_id "QQ"、标题为空、尺寸为
- * 屏幕大小）。这里在协议层替它补一条 xdg_toplevel.set_fullscreen，让合成器
- * 把它精确铺满当前输出。
+ * 屏幕大小）。这里在协议层替它补一条 xdg_toplevel.set_title("QQ 截图")
+ * 和一条 xdg_toplevel.set_fullscreen，前者方便合成器窗口规则匹配，后者
+ * 让合成器把它精确铺满当前输出。
  *
  * ── 实现要点 ──
  * - connect 时识别 Wayland socket 并记下 fd；一个进程可能有多条 Wayland
@@ -254,6 +255,23 @@ static void queue_fullscreen(int conn, uint32_t toplevel)
     queue_message(conn, msg, sizeof msg);
 }
 
+/* 替覆盖层设一个稳定标题，方便合成器窗口规则匹配（Electron 自己不设标题）。 */
+static void queue_title(int conn, uint32_t toplevel, const char *title)
+{
+    size_t slen = strlen(title) + 1; /* 线协议里的字符串长度含结尾 NUL */
+    size_t padded = (slen + 3) & ~(size_t)3;
+    size_t size = 8 + 4 + padded;
+    if (inject_len[conn] + size > sizeof inject_buf[conn])
+        return;
+    uint8_t *p = inject_buf[conn] + inject_len[conn];
+    put_u32(p, toplevel);
+    put_u32(p + 4, (uint32_t)((size << 16) | 2u)); /* xdg_toplevel.set_title */
+    put_u32(p + 8, (uint32_t)slen);
+    memset(p + 12, 0, padded);
+    memcpy(p + 12, title, slen);
+    inject_len[conn] += size;
+}
+
 static void overlay_check(struct wl_object_state *o)
 {
     if (disabled || o->is_overlay || o->border)
@@ -266,8 +284,9 @@ static void overlay_check(struct wl_object_state *o)
         return;
 
     o->is_overlay = 1;
+    queue_title(o->conn, o->id, "QQ 截图");
     queue_fullscreen(o->conn, o->id);
-    LOG("requesting fullscreen for the screenshot overlay (window %u, %dx%d)",
+    LOG("requesting title + fullscreen for the screenshot overlay (window %u, %dx%d)",
         o->id, o->geom_w, o->geom_h);
 }
 
