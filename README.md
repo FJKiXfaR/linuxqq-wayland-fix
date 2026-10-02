@@ -87,7 +87,7 @@ QQ 本体需另外安装（[官方下载](https://im.qq.com/linuxqq/)）。
   
   ```nix
   {
-    inputs.linuxqq-wayland-fix.url = "github:yigexuanmu/linuxqq-wayland-fix-nix";
+    inputs.linuxqq-wayland-fix.url = "github:SHORiN-KiWATA/linuxqq-wayland-fix";
   
     outputs = { self, nixpkgs, linuxqq-wayland-fix, ... }: {
       nixosConfigurations.host = nixpkgs.lib.nixosSystem {
