@@ -310,6 +310,90 @@ static void blit(uint32_t *dst, int dw, int dh, int mx, int my, int mw, int mh, 
     }
 }
 
+/* 指针所在的 XRandR 显示器（名字 + X 逻辑尺寸）。 */
+static int pointer_monitor(Display *dpy, char *name, size_t name_size, int *mw, int *mh)
+{
+    Window root = DefaultRootWindow(dpy);
+    Window rr, cr;
+    int rx, ry, wx, wy;
+    unsigned mask;
+    if (!XQueryPointer(dpy, root, &rr, &cr, &rx, &ry, &wx, &wy, &mask))
+        return 0;
+
+    void *xrandr = dlopen("libXrandr.so.2", RTLD_LAZY | RTLD_LOCAL);
+    if (!xrandr)
+        return 0;
+    get_monitors_fn get = (get_monitors_fn)dlsym(xrandr, "XRRGetMonitors");
+    free_monitors_fn freem = (free_monitors_fn)dlsym(xrandr, "XRRFreeMonitors");
+    int n = 0, found = 0;
+    MonitorInfo *m = get ? get(dpy, root, True, &n) : NULL;
+    for (int i = 0; m && i < n; i++) {
+        if (rx < m[i].x || rx >= m[i].x + m[i].width ||
+            ry < m[i].y || ry >= m[i].y + m[i].height)
+            continue;
+        char *nm = XGetAtomName(dpy, m[i].name);
+        if (nm) {
+            snprintf(name, name_size, "%s", nm);
+            *mw = m[i].width;
+            *mh = m[i].height;
+            XFree(nm);
+            found = 1;
+        }
+        break;
+    }
+    if (m && freem)
+        freem(m);
+    dlclose(xrandr);
+    return found;
+}
+
+/* 单屏模式：只截指针所在显示器，按请求的尺寸缩放。 */
+static struct {
+    Display *dpy;
+    char name[64];
+    int w, h;
+    uint32_t *pix;
+    struct timespec at;
+} mon_cache;
+
+static uint32_t *monitor_image(Display *dpy, const char *name, int w, int h)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (mon_cache.pix && mon_cache.dpy == dpy && mon_cache.w == w && mon_cache.h == h &&
+        !strcmp(mon_cache.name, name) &&
+        (now.tv_sec - mon_cache.at.tv_sec) * 1000 +
+            (now.tv_nsec - mon_cache.at.tv_nsec) / 1000000 < 1500)
+        return mon_cache.pix;
+
+    free(mon_cache.pix);
+    mon_cache.pix = NULL;
+
+    struct capture c;
+    if (capture_all(&c)) {
+        capture_free(&c);
+        return NULL;
+    }
+    uint32_t *pix = calloc((size_t)w * h, 4);
+    if (pix) {
+        for (struct output *o = c.outputs; o; o = o->next)
+            if (o->pix && !strcmp(o->name, name)) {
+                LOG("single-monitor: %s %dx%d -> requested %dx%d", name, o->w, o->h, w, h);
+                blit(pix, w, h, 0, 0, w, h, o);
+                break;
+            }
+    }
+    capture_free(&c);
+
+    mon_cache.dpy = dpy;
+    snprintf(mon_cache.name, sizeof mon_cache.name, "%s", name);
+    mon_cache.w = w;
+    mon_cache.h = h;
+    mon_cache.at = now;
+    mon_cache.pix = pix;
+    return pix;
+}
+
 static uint32_t *root_image(Display *dpy, Window root, int *w, int *h)
 {
     struct timespec now;
@@ -383,9 +467,19 @@ static int fill_from_wayland(Display *dpy, Window root, XImage *img, int x, int 
 {
     int rw = 0, rh = 0;
     uint32_t *pix = NULL;
+    char name[64];
+    int mw = 0, mh = 0;
 
-    if (getenv("WAYLAND_DISPLAY") && img->format == ZPixmap && img->bits_per_pixel == 32)
-        pix = root_image(dpy, root, &rw, &rh);
+    if (getenv("WAYLAND_DISPLAY") && img->format == ZPixmap && img->bits_per_pixel == 32) {
+        if (pointer_monitor(dpy, name, sizeof name, &mw, &mh)) {
+            /* 单屏模式：QQ 看到的屏幕就是指针所在的那块显示器 */
+            pix = monitor_image(dpy, name, img->width, img->height);
+            rw = img->width;
+            rh = img->height;
+        } else {
+            pix = root_image(dpy, root, &rw, &rh);
+        }
+    }
     if (!pix)
         return -1;
     for (int j = 0; j < img->height; j++) {
@@ -494,4 +588,30 @@ Bool XShmGetImage(Display *dpy, Drawable d, XImage *img, int x, int y, unsigned 
     memset(img->data, 0, (size_t)img->bytes_per_line * img->height);
     LOG("XShmGetImage on root %dx%d+%d+%d failed, returning a black image", img->width, img->height, x, y);
     return True;
+}
+
+/*
+ * 单屏模式：QQ 用 XGetWindowAttributes(root) 取「屏幕尺寸」来决定截取范围
+ * 和覆盖层大小。这里把根窗口的宽高报成指针所在显示器的尺寸，配合
+ * fill_from_wayland 只截那块输出；找不到显示器时（真 X11 会话等）保持原样。
+ */
+typedef int (*get_window_attrs_fn)(Display *, Window, XWindowAttributes *);
+
+int XGetWindowAttributes(Display *dpy, Window w, XWindowAttributes *attr)
+{
+    static get_window_attrs_fn real;
+    if (!real)
+        real = (get_window_attrs_fn)dlsym(RTLD_NEXT, "XGetWindowAttributes");
+
+    int r = real(dpy, w, attr);
+    if (r && enabled() && getenv("WAYLAND_DISPLAY") && is_root(dpy, w)) {
+        char name[64];
+        int mw, mh;
+        if (pointer_monitor(dpy, name, sizeof name, &mw, &mh)) {
+            LOG("single-monitor: report screen as %s %dx%d", name, mw, mh);
+            attr->width = mw;
+            attr->height = mh;
+        }
+    }
+    return r;
 }
