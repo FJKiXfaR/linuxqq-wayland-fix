@@ -36,6 +36,41 @@ make
 sudo make install PREFIX=/usr
 ```
 
+### NixOS（Flake）
+
+本仓库自带 `flake.nix`，提供 `packages`、`overlays`、`nixosModules` 三个出口。NixOS 用户推荐直接用模块：
+
+```nix
+{
+  inputs.linuxqq-wayland-fix.url = "github:yigexuanmu/linuxqq-wayland-fix-nix";
+
+  outputs = { self, nixpkgs, linuxqq-wayland-fix, ... }: {
+    nixosConfigurations.host = nixpkgs.lib.nixosSystem {
+      modules = [
+        linuxqq-wayland-fix.nixosModules.default
+        {
+          nixpkgs.config.allowUnfree = true; # pkgs.qq 是 unfree
+          programs.linuxqq-wayland-fix.enable = true;
+        }
+      ];
+    };
+  };
+}
+```
+
+`enable = true` 会装好修复包和 `pkgs.qq`，并把 QQ 的路径写进启动器（`QQ_WAYLAND_FIX_QQ`），之后从应用菜单打开「**QQ（Wayland修复版）**」即可。可用 `linuxqq-wayland-fix --doctor` 自检；`programs.linuxqq-wayland-fix.qq = null` 可以只装修复包、不装 QQ。
+
+不用模块的话：
+
+```bash
+nix build github:yigexuanmu/linuxqq-wayland-fix-nix
+nix develop   # 进开发环境后直接 make
+```
+
+> `pkgs.qq` 是 unfree，flake 只在 nixpkgs 允许 unfree 时才引用它（判断 `pkgs.config.allowUnfree`）。不允许时 `packages.default` 依然能构建，但启动器要自己去 PATH 里找 QQ（`linuxqq` 或 `qq`），或读你设置的 `QQ_WAYLAND_FIX_QQ`；这种情况下 `--doctor` 的「QQ 内部实现」一节会显示找不到目录——包不知道你的 QQ 装在哪，属正常。想让 `nix build` / `nix run` 也自动带上 QQ，把 `{ allowUnfree = true; }` 写进 `~/.config/nixpkgs/config.nix`（flake 的 nixpkgs 会读这个文件）。
+
+> 打包时对上游启动器脚本做了三处 NixOS 适配（`compgen` 内建缺失、QQ 安装目录不在 `/opt/QQ`、nixpkgs 的 QQ 命令叫 `qq`），都写在 `nix/package.nix` 的 `postFixup` 里，不改仓库源码。
+
 ## 注意事项
 
 目前仅支持原生 linuxqq，不支持沙盒版本，KDE Plasma 桌面的支持也存在一些问题；
