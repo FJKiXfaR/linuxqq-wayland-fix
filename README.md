@@ -117,7 +117,7 @@ QQ 本体需另外安装（[官方下载](https://im.qq.com/linuxqq/)）。
 
 ## 注意事项
 
-XWayaland需要正常工作；屏幕共享功能需要正确配置 PipeWire 和桌面环境的 Portal；剪贴板需要桌面支持 data-control 协议。
+XWayaland需要正常工作；屏幕共享功能需要正确配置 PipeWire 和桌面环境的 Portal；剪贴板需要桌面支持 data-control 协议；截图需要桌面支持 `wlr-screencopy`。
 
 ## 使用方法
 
