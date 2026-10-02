@@ -25,40 +25,6 @@
 
   在 Wayland QQ 尝试进行屏幕分享会提示 Wayland 下无法使用此功能，或者出现循环打开启动器的情况，总之是无法使用。
 
-### NixOS（Flake）
-
-本仓库自带 `flake.nix`，提供 `packages.default`、`overlays.default` 和 `nixosModules.default`。NixOS 用户推荐直接用模块：
-
-```nix
-{
-  inputs.linuxqq-wayland-fix.url = "github:yigexuanmu/linuxqq-wayland-fix-nix";
-
-  outputs = { self, nixpkgs, linuxqq-wayland-fix, ... }: {
-    nixosConfigurations.host = nixpkgs.lib.nixosSystem {
-      modules = [
-        linuxqq-wayland-fix.nixosModules.default
-        {
-          nixpkgs.config.allowUnfree = true; # pkgs.qq 是 unfree
-          programs.linuxqq-wayland-fix.enable = true;
-        }
-      ];
-    };
-  };
-}
-```
-
-`enable = true` 会装好修复包和 `pkgs.qq`，并把 QQ 的路径告诉启动器；之后从应用菜单打开「**QQ（Wayland修复版）**」即可，自检用 `linuxqq-wayland-fix --doctor`。只想装修复包：`programs.linuxqq-wayland-fix.qq = null`。
-
-不用模块的话：
-
-```bash
-nix build github:yigexuanmu/linuxqq-wayland-fix-nix
-nix develop   # 进开发环境后直接 make
-```
-
-打包细节都在 `nix/package.nix`：NixOS 缺少的库搜索路径、EGL 平台、Vulkan ICD 路径等都在构建期补齐，不改动上游的任何文件。
-
-
 ## 注意事项
   >修复前
 
@@ -109,12 +75,46 @@ QQ 本体需另外安装（[官方下载](https://im.qq.com/linuxqq/)）。
 
 - 源码
 
-  依赖：C 编译器、make、pkg-config、wayland-scanner，以及 glib2（gio）、libX11、libwayland-client 的开发文件；libpulse、libpipewire-0.3 的开发文件（只用头文件，运行时不依赖）。
-
-  ```bash
-  make
-  sudo make install PREFIX=/usr
+    依赖：C 编译器、make、pkg-config、wayland-scanner，以及 glib2（gio）、libX11、libwayland-client 的开发文件；libpulse、libpipewire-0.3 的开发文件（只用头文件，运行时不依赖）。
+  
+    ```bash
+    make
+    sudo make install PREFIX=/usr
+    ```
+  
+  - NixOS（Flake）
+  
+  本仓库自带 `flake.nix`，提供 `packages.default`、`overlays.default` 和 `nixosModules.default`。NixOS 用户推荐直接用模块：
+  
+  ```nix
+  {
+    inputs.linuxqq-wayland-fix.url = "github:yigexuanmu/linuxqq-wayland-fix-nix";
+  
+    outputs = { self, nixpkgs, linuxqq-wayland-fix, ... }: {
+      nixosConfigurations.host = nixpkgs.lib.nixosSystem {
+        modules = [
+          linuxqq-wayland-fix.nixosModules.default
+          {
+            nixpkgs.config.allowUnfree = true; # pkgs.qq 是 unfree
+            programs.linuxqq-wayland-fix.enable = true;
+          }
+        ];
+      };
+    };
+  }
   ```
+  
+  `enable = true` 会装好修复包和 `pkgs.qq`，并把 QQ 的路径告诉启动器；之后从应用菜单打开「**QQ（Wayland修复版）**」即可，自检用 `linuxqq-wayland-fix --doctor`。只想装修复包：`programs.linuxqq-wayland-fix.qq = null`。
+  
+  不用模块的话：
+  
+  ```bash
+  nix build github:yigexuanmu/linuxqq-wayland-fix-nix
+  nix develop   # 进开发环境后直接 make
+  ```
+  
+  打包细节都在 `nix/package.nix`：NixOS 缺少的库搜索路径、EGL 平台、Vulkan ICD 路径等都在构建期补齐，不改动上游的任何文件。
+  
 
 ## 注意事项
 
