@@ -34,7 +34,17 @@ make
 sudo make install PREFIX=/usr
 ```
 
-## 使用
+## 注意事项
+
+目前仅支持原生 linuxqq，不支持沙盒版本，KDE Plasma 桌面的支持也存在一些问题；
+
+XWayaland需要正常工作；
+
+屏幕共享需要桌面的 Portal 正常工作；
+
+剪贴板需要桌面支持 data-control 协议。
+
+## 使用方法
 
 完全退出QQ（包括托盘），然后从应用菜单打开「**QQ（Wayland修复版）**」。
 
@@ -58,15 +68,19 @@ sudo make install PREFIX=/usr
     linuxqq-wayland-fix --doctor
     ```
 
-## 兼容性
+    QQ 崩溃时，崩溃记录（Bugly 的 `tomb_*.txt`）会保存到 `~/.cache/linuxqq-wayland-fix/crash/`（原位置会被 `linuxqq` 启动脚本清空），反馈问题时请附上。
 
-| 项目     | 要求                                                                                                                                             |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 屏幕共享 | xdg-desktop-portal 的 ScreenCast                                                                     |
-| 剪贴板   | 合成器支持 data-control（`ext-data-control-v1` 或 `wlr-data-control-unstable-v1`）：**GNOME 不支持** |               
-| XWayland | 需要（QQ 的界面流程和剪贴板仍是 X11）                                                                                                            |
+## 工作原理
 
->kde plasma上运行异常，暂不支持，原因未明
+启动器通过 `LD_PRELOAD` 向 QQ 注入三个小库，不修改任何 QQ 文件。
+
+**屏幕共享（`libqq-wl-portal.so`）**：QQ 的采集库 `broadcast-core.so` 其实自带一套 portal + PipeWire 的 Wayland 采集代码，但缺少「选择共享源」这一步，从未启用。本库只对 broadcast-core 发起的调用生效：让它走 Wayland 分支、在它连接 PipeWire 时自己走一遍 portal 选择流程，并修正两个 QQ 自身的 bug（声卡格式不是 s16le/f32le 时设备音频静默失败；共享内存帧忽略行跨度导致画面斜切）。另外，显示器坐标不从 0 开始时（如 Hyprland 单屏 `position=1920x0`），QQ 会给某个窗口算出空的几何并主动崩溃；本库在 QQ 主进程里把这处崩溃改为跳过该请求（#1，由 [@YoungJurry](https://github.com/YoungJurry) 最早定位）。
+
+**剪贴板（`libqq-clipbridge.so`）**：QQ 的剪贴板代码（`wrapper.node` 里的 `ClipBoardHelper`）只用 Xlib，所以 QQ 在 Wayland 下只读写 X11 剪贴板。本库在 QQ 进程里起一个后台线程，用自己的 X 连接和 data-control 协议双向桥接：QQ 复制时把格式提供给 Wayland，别的程序复制时接管 X11 剪贴板；数据都在粘贴时按需传输一次。
+
+**截图（`libqq-screenshot.so`）**：启动器为了让屏幕共享可用，给 QQ 的是 `XDG_SESSION_TYPE=x11`，于是 QQ 用 X11 的方式对根窗口 `XGetImage` 截全屏；而 Wayland 下的 XWayland 是 rootless 的，根窗口没有内容，这一步必然失败，QQ 不检查返回值就直接崩溃。本库拦截对根窗口的截取，改为通过 `wlr-screencopy` 截取各个 Wayland 输出，按 X 的显示器布局拼好交给 QQ；合成器不支持时给一张黑图，至少不再闪退。
+
+详细的逆向分析见 [docs/原理详解.md](docs/原理详解.md)。
 
 ## 已知问题
 
@@ -79,11 +93,35 @@ sudo make install PREFIX=/usr
 
 ## 排错
 
-先运行 `linuxqq-wayland-fix --doctor`。日志在 `$XDG_RUNTIME_DIR/linuxqq-wayland-fix.log`，QQ 的崩溃记录保存在 `~/.cache/linuxqq-wayland-fix/crash/`，反馈问题时请附上。症状对照、单独关掉某个修复的方法见 [常见问题与排错](docs/常见问题与排错.md)。
+日志：`$XDG_RUNTIME_DIR/linuxqq-wayland-fix.log`
 
-## 工作原理
+```bash
+grep -E 'qq-wl-portal|qq-clipbridge' "$XDG_RUNTIME_DIR/linuxqq-wayland-fix.log"
+```
 
-启动器通过 `LD_PRELOAD` 向 QQ 注入三个小库，不修改任何 QQ 文件：`libqq-wl-portal.so` 给 QQ 自带的 Wayland 共享代码补上 portal 选择步骤；`libqq-clipbridge.so` 在 QQ 的 X11 剪贴板和 Wayland 剪贴板之间双向桥接；`libqq-screenshot.so` 让 QQ 截全屏时从 Wayland 取画面。详见 [原理详解](docs/原理详解.md)。
+正常的输出：
+
+```
+[qq-clipbridge] ready (pid 12345, ext-data-control)
+[qq-wl-portal] broadcast-core asked to connect fd=1, opening portal       ← 开始共享
+[qq-wl-portal] portal ok: pipewire fd=82 node=127
+[qq-wl-portal] device audio: report sample format 7 as float32le (5) …   ← 开启共享设备音频
+[qq-clipbridge] QQ copied -> Wayland: text/plain;charset=utf-8 …          ← QQ 里复制
+[qq-clipbridge] Wayland clipboard changed -> X11 for QQ: image/png        ← 别处复制
+```
+
+| 症状                                                                     | 原因 / 办法                                                                                                                                                     |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 提示「Wayland桌面环境暂时无法使用屏幕分享功能」                          | 不是从「QQ（Wayland修复版）」打开的                                                                                                                             |
+| 点共享没反应，`coredumpctl` 有 QQ 的 SIGTRAP，栈里有 `PulseAudioWrapper` | Easy Effects，见上文                                                                                                                                            |
+| 点「确定」没反应，栈里有 `ZSTD_` / `libgallium`                          | QQ 自带的 zstd 与 Mesa 冲突；启动器已设置 `MESA_SHADER_CACHE_DISABLE=true`，请确认没被覆盖                                                                      |
+| 日志里没有任何 `qq-wl-portal` / `qq-clipbridge`                          | QQ 没被注入（旧 QQ 没退干净），或 QQ 更新后改了实现，运行 `--doctor`                                                                                            |
+| `compositor supports neither …`                                          | 合成器不支持 data-control（如 GNOME），剪贴板修复不可用                                                                                                         |
+| `response=1`                                                             | 在 portal 选择框里点了取消                                                                                                                                      |
+| 按截图键 QQ 闪退，日志里有 `X_GetImage` 的 `BadMatch`                    | 截图修复没有生效（旧 QQ 没退干净，或没从「QQ（Wayland修复版）」打开）；正常时日志里有 `[qq-screenshot] captured …`                                              |
+| 点「确定」开始共享时 QQ 闪退，崩溃记录里是 `signal: 5 (SIGTRAP)`         | 显示器坐标不从 0 开始时 QQ 算出空的窗口几何（#1）；本工具会自动处理，日志里应有 `empty-geometry fix: patched`，若是 `not patching` 说明 QQ 更新改了实现，请反馈 |
+
+排查时可以单独关掉某个修复：`QQ_WL_NATIVE_DISABLE=1`（屏幕共享）、`QQ_CLIPBOARD_FIX_DISABLE=1`（剪贴板）、`QQ_WL_GEOMETRY_FIX_DISABLE=1`（共享时防闪退）、`QQ_SCREENSHOT_FIX_DISABLE=1`（截图）。
 
 ## 致谢
 
