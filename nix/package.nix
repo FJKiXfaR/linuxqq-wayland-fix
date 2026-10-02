@@ -8,6 +8,7 @@
   libx11,
   wayland,
   libpulseaudio,
+  libva,
   pipewire,
   # 启动器脚本运行时要用的小工具：pgrep、busctl、wayland-info、od、xargs…，
   # 从应用菜单启动时它们不一定在 PATH 里，wrap 的时候补上。
@@ -135,17 +136,37 @@ stdenv.mkDerivation (finalAttrs: {
     # EGL_PLATFORM：NixOS 的 glvnd 在没有任何平台提示时，会把 eglGetDisplay(EGL_DEFAULT_DISPLAY)
     #   交给 Mesa 厂商应答；Mesa 驱动不了 NVIDIA 闭源驱动，只能退化成 llvmpipe 软件渲染。
     #   后果是屏幕共享时插件进程里 12 个 llvmpipe 线程各占约 50%，合计约 5 个核（实测
-    #   484%~570%）；采集/转换本可在 GPU 上做。显式声明 Wayland 平台后，同一个调用由
-    #   NVIDIA 的 EGL 应答，实测同样的共享降到 22%~81%。
+    #   484%~570%）；采集/转换本可在 GPU 上做。显式声明 Wayland 平台后，同一个调用改由
+    #   驱动的 EGL 应答，实测同样的共享降到 22%~81%。
     #   只在 Wayland 会话里设置，且不覆盖用户自己设定的值（X11 会话下保持原样）。
+    #   （AMD/Intel 上 Mesa 能直接驱动硬件，这条基本是空操作；出问题的是 NVIDIA 闭源驱动。）
     #
-    # NVIDIA 驱动库目录：broadcast-core.so / avsdk / 系统 ffmpeg 都靠裸名 dlopen 硬件编码
-    #   解码库（libnvidia-encode.so、libnvcuvid.so、libcuda.so），libavcodec 自身没有 RUNPATH，
-    #   只能靠 LD_LIBRARY_PATH 与 ld.so.cache。Arch/Debian 的 /usr/lib 本来就在搜索路径里，
-    #   所以上游没管；NixOS 的驱动库只在 /run/opengl-driver/lib。不补这一步，采集帧就只能
-    #   走软件编码（broadcast-core.so 里 NVENC 与 Openh264 两个编码器，目前只能落到后者）。
-    #   追加到末尾（不是开头）：该目录顶层没有 libGL/libEGL/libgbm/libvulkan 这些加载器，
-    #   放末尾既能让 NVIDIA 自家的库兜底命中，又不会遮蔽前面的 store/系统库。
+    # VK_DRIVER_FILES：让上游启动器的 Vulkan 探测在 NixOS 上也能命中。它只看
+    #   VK_DRIVER_FILES / VK_ICD_FILENAMES、/usr/share/vulkan/icd.d、/etc/vulkan/icd.d、
+    #   XDG_DATA_HOME 下的 icd.d，而 NixOS 的 ICD 在 /run/opengl-driver/share/vulkan/icd.d，
+    #   于是永远探测不到、拿不到 --use-angle=vulkan（上游在 Arch 上的默认行为，能避开部分
+    #   设备上 Wayland + ANGLE 的 GLES 后端把共享画面渲染花的问题）。把该目录下的 ICD
+    #   全部（各家厂商）交给启动器即可；用户自己设过就不动，不想要就 QQ_WAYLAND_FIX_ANGLE=off。
+    #
+    # 硬件编解码库路径（厂商中立，两条）：
+    #
+    # ① 把 /run/opengl-driver/lib 追加进 LD_LIBRARY_PATH。NixOS 把各家的硬件编解码库都
+    #    聚合在这里：NVIDIA 的 libnvidia-encode.so / libnvcuvid.so / libcuda.so
+    #    （NVENC/NVDEC/CUDA）、AMD 的 libamfrt64.so.1（AMF，来自 extraPackages 里的 amf）、
+    #    Intel 的 libmfx.so.1（oneVPL/QSV，来自 vpl-gpu-rt）等等。
+    #    broadcast-core.so 与系统 ffmpeg 的 libavcodec 都是用裸名 dlopen 这些库，
+    #    libavcodec 自身没有 RUNPATH，只能靠 LD_LIBRARY_PATH 与 ld.so.cache。
+    #    Arch/Debian 的 /usr/lib 本来就在搜索路径里，所以上游没管。不补这一步，采集帧
+    #    只能落到 broadcast-core.so 自带的软件编码器（Openh264）。
+    #    追加到末尾而不是开头：该目录顶层没有 libGL/libEGL/libgbm/libvulkan 这些加载器，
+    #    放末尾既能让厂商库兜底命中，又不会遮蔽前面的 store/系统库。
+    #
+    # ② 补上 libva。broadcast-core.so 还会 dlopen("libva.so") 走 VA-API，而 NixOS 的
+    #    /run/opengl-driver/lib 里不一定有 libva（看用户有没有把它加进
+    #    hardware.graphics.extraPackages）。nixpkgs 的 libva 编译时就把驱动目录设成了
+    #    /run/opengl-driver/lib/dri（各家驱动都在那儿：radeonsi / iHD / nvidia / nouveau /
+    #    r600 …），所以补上它之后，AMD/Intel 的硬件编解码与 NVIDIA 的 nvidia-vaapi-driver
+    #    都能直接用。
     #
     # PATH：补上启动器与 --doctor 依赖的小工具。
     # QQ_WAYLAND_FIX_QQ：指向 pkgs.qq 的启动脚本（它会自己处理 libssh2 预加载、
@@ -153,9 +174,10 @@ stdenv.mkDerivation (finalAttrs: {
     # QQ_WAYLAND_FIX_QQ_ROOT：上面第 2 个补丁用到的 QQ 安装目录。
     wrapProgram $out/bin/linuxqq-wayland-fix \
       --prefix PATH : ${lib.makeBinPath runtimeTools} \
-      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ (lib.getLib pipewire) ]} \
+      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ libva (lib.getLib pipewire) ]} \
       --suffix LD_LIBRARY_PATH : /run/opengl-driver/lib \
       --run 'if [ -z "''${EGL_PLATFORM:-}" ] && [ -n "''${WAYLAND_DISPLAY:-}" ]; then export EGL_PLATFORM=wayland; fi' \
+      --run 'if [ -z "''${VK_DRIVER_FILES:-}''${VK_ICD_FILENAMES:-}" ] && [ -d /run/opengl-driver/share/vulkan/icd.d ]; then icds=$(ls /run/opengl-driver/share/vulkan/icd.d/*.json 2>/dev/null | tr "\n" ":"); [ -n "$icds" ] && export VK_DRIVER_FILES="''${icds%:}"; fi' \
       ${lib.optionalString (qqPackage != null) ''
         --set QQ_WAYLAND_FIX_QQ ${lib.getExe' qqPackage "qq"} \
         --set QQ_WAYLAND_FIX_QQ_ROOT "${qqPackage}/opt/QQ"
