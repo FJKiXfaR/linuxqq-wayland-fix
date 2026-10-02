@@ -13,6 +13,7 @@
 #   QQ_WL_NATIVE_DISABLE=1    关闭屏幕共享修复（排查问题用）
 #   QQ_CLIPBOARD_FIX_DISABLE=1 关闭剪贴板修复（排查问题用）
 #   QQ_SCREENSHOT_FIX_DISABLE=1 关闭截图防闪退（排查问题用）
+#   QQ_BORDER_FIX_DISABLE=1   关闭共享边框隐藏（排查问题用）
 
 set -u
 
@@ -21,6 +22,7 @@ LIBDIR="@LIBEXECDIR@"
 SCREENSHARE_LIB="$LIBDIR/libqq-wl-portal.so"
 CLIPBOARD_LIB="$LIBDIR/libqq-clipbridge.so"
 SCREENSHOT_LIB="$LIBDIR/libqq-screenshot.so"
+BORDERFIX_LIB="$LIBDIR/libqq-borderfix.so"
 LOG="${QQ_WAYLAND_FIX_LOG:-${XDG_RUNTIME_DIR:-/tmp}/linuxqq-wayland-fix.log}"
 QQ_CRASH_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/QQ/crash_files"
 CRASH_KEEP="${XDG_CACHE_HOME:-$HOME/.cache}/linuxqq-wayland-fix/crash"
@@ -117,6 +119,7 @@ doctor() {
     [[ -r "$SCREENSHARE_LIB" ]] && pass "屏幕共享修复: $SCREENSHARE_LIB" || bad "找不到 $SCREENSHARE_LIB"
     [[ -r "$CLIPBOARD_LIB" ]] && pass "剪贴板修复: $CLIPBOARD_LIB" || bad "找不到 $CLIPBOARD_LIB"
     [[ -r "$SCREENSHOT_LIB" ]] && pass "截图防闪退: $SCREENSHOT_LIB" || bad "找不到 $SCREENSHOT_LIB"
+    [[ -r "$BORDERFIX_LIB" ]] && pass "共享边框隐藏: $BORDERFIX_LIB" || note "找不到 $BORDERFIX_LIB（共享时蓝色边框会变成真实窗口）"
     [[ -n "${WAYLAND_DISPLAY:-}" ]] && pass "Wayland 会话: $WAYLAND_DISPLAY" || note "WAYLAND_DISPLAY 为空，不在 Wayland 会话里？"
     [[ -n "${DISPLAY:-}" ]] && pass "XWayland: $DISPLAY" || bad "DISPLAY 为空：QQ 的界面与剪贴板仍需要 XWayland"
     case "$(angle_mode)" in
@@ -258,7 +261,7 @@ doctor() {
 case "${1:-}" in
     --doctor) doctor; exit $? ;;
     --version) echo "linuxqq-wayland-fix $VERSION"; exit 0 ;;
-    --help|-h) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help|-h) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 QQ=$(find_qq)
@@ -268,7 +271,7 @@ if [[ -z "$QQ" ]]; then
 fi
 
 preload=""
-for lib in "$SCREENSHARE_LIB" "$CLIPBOARD_LIB" "$SCREENSHOT_LIB"; do
+for lib in "$SCREENSHARE_LIB" "$CLIPBOARD_LIB" "$SCREENSHOT_LIB" "$BORDERFIX_LIB"; do
     [[ -r "$lib" ]] && preload="${preload:+$preload:}$lib"
 done
 export LD_PRELOAD="$preload${LD_PRELOAD:+:$LD_PRELOAD}"
