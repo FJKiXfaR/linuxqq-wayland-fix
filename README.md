@@ -38,7 +38,7 @@ sudo make install PREFIX=/usr
 
 ### NixOS（Flake）
 
-本仓库自带 `flake.nix`，提供 `packages`、`overlays`、`nixosModules` 三个出口。NixOS 用户推荐直接用模块：
+本仓库自带 `flake.nix`（已同步上游 v0.2.6），提供 `packages`、`overlays`、`nixosModules` 三个出口。NixOS 用户推荐直接用模块：
 
 ```nix
 {

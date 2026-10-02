@@ -19,13 +19,16 @@
 
       # 上游没有 VERSION 文件（Makefile 用 git describe 兜底），这里换成 git revision，
       # 这样 linuxqq-wayland-fix --doctor 和日志里能看到具体的构建版本。
+      # 同步上游发版时改这一行（对应上游 tag vX.Y.Z）。
+      upstreamVersion = "0.2.6";
+
       version =
         if self ? shortRev then
-          "0.0.0-unstable-${self.shortRev}"
+          "${upstreamVersion}-unstable-${self.shortRev}"
         else if self ? dirtyShortRev then
-          "0.0.0-unstable-${self.dirtyShortRev}"
+          "${upstreamVersion}-unstable-${self.dirtyShortRev}"
         else
-          "0.0.0";
+          upstreamVersion;
 
       # nixpkgs 的 pkgs.qq 是 unfree。只有在 nixpkgs 允许 unfree 时才引用它，
       # 否则 packages / overlays 在默认 nixpkgs 上会直接求值报错。

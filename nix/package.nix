@@ -187,9 +187,10 @@ stdenv.mkDerivation (finalAttrs: {
   meta = {
     description = "修复 Linux QQ 在 Wayland 下的屏幕共享、共享电脑声音、剪贴板和截图闪退";
     longDescription = ''
-      通过 LD_PRELOAD 向 Linux QQ 注入三个小库，不修改 QQ 自身的文件：
+      通过 LD_PRELOAD 向 Linux QQ 注入四个小库，不修改 QQ 自身的文件：
       libqq-wl-portal.so（屏幕共享与共享设备音频）、libqq-clipbridge.so
-      （X11 与 Wayland 剪贴板双向桥接）、libqq-screenshot.so（截图防闪退）。
+      （X11 与 Wayland 剪贴板双向桥接）、libqq-screenshot.so（截图防闪退）、
+      libqq-borderfix.so（共享时隐藏全屏边框窗口）。
       从应用菜单的「QQ（Wayland修复版）」启动，或用 linuxqq-wayland-fix --doctor 自检。
     '';
     homepage = "https://github.com/SHORiN-KiWATA/linuxqq-wayland-fix";
