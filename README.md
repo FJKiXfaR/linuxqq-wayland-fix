@@ -49,6 +49,18 @@
   
 >详细的逆向分析和原理见由 Deepseek V4.1 Flash 和 Opus 5.5 排查生成的：[docs/原理详解.md](docs/原理详解.md)。
 
+## 注意事项和兼容性
+
+XWayaland需要正常工作；屏幕共享功能需要正确配置 PipeWire 和桌面环境的 Portal；剪贴板需要桌面支持 `ext-data-control` 协议；截图需要桌面支持 `wlr-screencopy`。
+
+兼容性调查表格
+
+| 修复内容 | KDE Plasma                 | GNOME                     | Hyprland | Niri |
+| -------- | -------------------------- | ------------------------- | -------- | ---- |
+| 屏幕共享 | ⚠️ 可用但内存方面似乎有异常 | ✅                         | ✅        | ✅    |
+| 剪贴板   | ✅                          | ❌（协议不支持）           | ✅        | ✅    |
+| 截图     | ⚠️因协议不支持，仅修复闪退  | ⚠️因协议不支持，仅修复闪退 | ✅        | ✅    |
+
 ## 安装
 
 QQ 本体需另外安装（[官方下载](https://im.qq.com/linuxqq/)）。
@@ -114,10 +126,6 @@ QQ 本体需另外安装（[官方下载](https://im.qq.com/linuxqq/)）。
   
   打包细节都在 `nix/package.nix`：NixOS 缺少的库搜索路径、EGL 平台、Vulkan ICD 路径等都在构建期补齐，不改动上游的任何文件。
   
-
-## 注意事项
-
-XWayaland需要正常工作；屏幕共享功能需要正确配置 PipeWire 和桌面环境的 Portal；剪贴板需要桌面支持 data-control 协议；截图需要桌面支持 `wlr-screencopy`。
 
 ## 使用方法
 
