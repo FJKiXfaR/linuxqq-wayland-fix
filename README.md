@@ -140,7 +140,8 @@ linuxqq-wayland-fix --doctor
 ## 已知问题
 
 - 使用 Easy Effects 时，需在它的输入和输入排除名单里都加上 `TRAE`，否则 QQ 一开共享就会崩；
-- KDE、GNOME 下因为不支持`wlr-screencopy`，截图背景是黑的；
+- GNOME 下因为不支持 `wlr-screencopy`，截图背景是黑的（KDE 走 KWin ScreenShot2，正常）；
+- KDE Plasma 自带 XWayland↔Wayland 剪贴板同步，剪贴板修复在 KDE 下默认禁用（QQ 的复制粘贴照常可用）；
 - 流畅度取决于 QQ 自己的编码，大概只有 20 帧左右；
 - 观看别人共享时画面可能花成横竖条纹，可以尝试用`QQ_WAYLAND_FIX_ANGLE=swiftshader`环境变量启动。详见 [原理详解](docs/原理详解.md#附观看共享花屏)。
 
