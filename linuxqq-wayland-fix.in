@@ -75,6 +75,101 @@ qq_runtime_exe() {
     [[ -x /opt/QQ/qq ]] && echo /opt/QQ/qq
 }
 
+# 合成器版本（best-effort，拿不到就空）。
+compositor_version() {
+    local de="${XDG_CURRENT_DESKTOP:-}"
+    case "$de" in
+        *niri*) niri --version 2>/dev/null | head -1 | cut -d' ' -f1-2 ;;
+        *Hyprland*) hyprctl version 2>/dev/null | head -1 | cut -d' ' -f1-2 ;;
+        *KDE*) kwin_wayland --version 2>/dev/null | head -1 ;;
+        *GNOME*) gnome-shell --version 2>/dev/null | head -1 ;;
+    esac
+}
+
+# 已安装包的「名 版本」（best-effort，支持 pacman/dpkg/rpm），查不到输出空。
+pkg_installed() {
+    local p
+    for p in "$@"; do
+        if command -v pacman >/dev/null 2>&1 && pacman -Q "$p" >/dev/null 2>&1; then
+            pacman -Q "$p" 2>/dev/null
+            return
+        fi
+        if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -W "$p" >/dev/null 2>&1; then
+            dpkg-query -W -f='${Package} ${Version}\n' "$p" 2>/dev/null
+            return
+        fi
+        if command -v rpm >/dev/null 2>&1 && rpm -q "$p" >/dev/null 2>&1; then
+            rpm -q --qf '%{NAME} %{VERSION}-%{RELEASE}\n' "$p" 2>/dev/null
+            return
+        fi
+    done
+}
+
+# 文件所属包「名 版本」（best-effort），查不到输出空。
+pkg_own() {
+    local f="$1" p
+    if command -v pacman >/dev/null 2>&1; then
+        p=$(pacman -Qoq "$f" 2>/dev/null | head -1)
+        [[ -n "$p" ]] && { pacman -Q "$p" 2>/dev/null; return; }
+    fi
+    if command -v dpkg-query >/dev/null 2>&1; then
+        p=$(dpkg -S "$f" 2>/dev/null | head -1 | cut -d: -f1)
+        [[ -n "$p" ]] && { dpkg-query -W -f='${Package} ${Version}\n' "$p" 2>/dev/null; return; }
+    fi
+    if command -v rpm >/dev/null 2>&1; then
+        rpm -qf --qf '%{NAME} %{VERSION}-%{RELEASE}\n' "$f" 2>/dev/null
+    fi
+}
+
+# 已安装的 QQ：包管理器优先（pacman/dpkg/rpm），查不到再退回可执行文件/AppImage。
+qq_installed() {
+    local out exe
+    out=$(pkg_installed linuxqq linuxqq-appimage linuxqq-nt-bwrap)
+    if [[ -z "$out" ]]; then
+        exe=$(qq_runtime_exe)
+        if [[ -n "$exe" ]]; then
+            out="手动安装（$exe）"
+        elif compgen -G "/opt/linuxqq-appimage/*.AppImage" >/dev/null; then
+            out="linuxqq-appimage（未运行）"
+        fi
+    fi
+    echo "$out"
+}
+
+# 当前桌面会选中的 portal 后端配置文件（.portal 的 UseIn 匹配 XDG_CURRENT_DESKTOP）。
+portal_backend() {
+    local de="${XDG_CURRENT_DESKTOP:-}" f d uses
+    [[ -n "$de" ]] || return 0
+    for f in /usr/share/xdg-desktop-portal/portals/*.portal; do
+        [[ -f "$f" ]] || continue
+        uses=$(sed -n 's/^UseIn=//p' "$f" | tr ';' '\n')
+        for d in ${de//:/ }; do
+            grep -qixF "$d" <<< "$uses" && { echo "$f"; return 0; }
+        done
+    done
+}
+
+# portal 接口版本与可用源（best-effort）：如 "ScreenCast v4（显示器、窗口），Screenshot v2"。
+portal_interfaces() {
+    command -v busctl >/dev/null 2>&1 || return 0
+    local base=org.freedesktop.portal.Desktop obj=/org/freedesktop/portal/desktop
+    local sc ss types src="" out=""
+    sc=$(busctl --user get-property "$base" "$obj" org.freedesktop.portal.ScreenCast version 2>/dev/null | awk '{print $2}')
+    ss=$(busctl --user get-property "$base" "$obj" org.freedesktop.portal.Screenshot version 2>/dev/null | awk '{print $2}')
+    types=$(busctl --user get-property "$base" "$obj" org.freedesktop.portal.ScreenCast AvailableSourceTypes 2>/dev/null | awk '{print $2}')
+    if [[ "$sc" =~ ^[0-9]+$ ]]; then
+        out="ScreenCast v$sc"
+        if [[ "$types" =~ ^[0-9]+$ ]]; then
+            (( types & 1 )) && src="显示器"
+            (( types & 2 )) && src="${src:+$src、}窗口"
+            (( types & 4 )) && src="${src:+$src、}虚拟屏"
+            out+="（${src:-无可用源}）"
+        fi
+    fi
+    [[ "$ss" =~ ^[0-9]+$ ]] && out+="${out:+，}Screenshot v$ss"
+    echo "$out"
+}
+
 # QQ 的“安装根”（含 resources/app 的目录）：安装版是 /opt/QQ，AppImage 在挂载目录里。
 # 从运行中主进程的 exe 向上找；找不到时退回 AppImage 挂载根/exe 所在目录（find 仍能搜到）。
 qq_runtime_dir() {
@@ -167,6 +262,12 @@ doctor() {
     echo "[基础]"
     local qq; qq=$(find_qq)
     [[ -n "$qq" ]] && pass "QQ 启动方式: $qq" || bad "找不到 QQ（linuxqq 或 /opt/QQ/qq），可用 QQ_WAYLAND_FIX_QQ 指定"
+    local qqinst; qqinst=$(qq_installed)
+    if [[ -n "$qqinst" ]]; then
+        pass "QQ 安装: $qqinst"
+    else
+        note "未检测到已安装的 linuxqq / linuxqq-appimage 包（可能手动安装）"
+    fi
     [[ -r "$SCREENSHARE_LIB" ]] && pass "屏幕共享修复: $SCREENSHARE_LIB" || bad "找不到 $SCREENSHARE_LIB"
     if clipboard_auto_disabled; then
         note "剪贴板修复: KDE 默认禁用（Plasma 自带同步，QQ 剪贴板照常可用；QQ_CLIPBOARD_FIX_FORCE=1 强制启用）"
@@ -246,11 +347,50 @@ doctor() {
 
     echo
     echo "[桌面环境]"
+    local de="${XDG_CURRENT_DESKTOP:-}" st="${XDG_SESSION_TYPE:-未知}" cv
+    cv=$(compositor_version)
+    if [[ -z "$de" ]]; then
+        note "桌面环境: 无法识别（XDG_CURRENT_DESKTOP 为空，$st）"
+    elif [[ -n "$cv" ]]; then
+        pass "桌面环境: $de（$st, $cv）"
+    else
+        pass "桌面环境: $de（$st）"
+    fi
     if command -v busctl >/dev/null 2>&1; then
-        local types
-        types=$(busctl --user get-property org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop \
+        local psvc pfile pdbus pown pstate pdesc piface ptypes
+        psvc=$(pkg_installed xdg-desktop-portal)
+        piface=$(portal_interfaces)
+        if [[ -n "$piface" ]]; then
+            pfile=$(portal_backend)
+            pdesc=""
+            if [[ -n "$pfile" ]]; then
+                pdbus=$(sed -n 's/^DBusName=\(org\.freedesktop\.impl\.portal\..*\)$/\1/p' "$pfile" | head -1)
+                pown=$(pkg_own "$pfile")
+                if [[ -n "$pdbus" ]] && busctl --user list 2>/dev/null | grep -F "$pdbus" | grep -q activatable; then
+                    pstate="按需启动"
+                elif [[ -n "$pdbus" ]] && busctl --user list 2>/dev/null | grep -qF "$pdbus"; then
+                    pstate="运行中"
+                else
+                    pstate="未运行"
+                fi
+                pdesc="，后端 $(basename "$pfile")（${pown:+$pown，}$pstate）"
+                if [[ "$pstate" == "未运行" ]]; then
+                    note "Portal: ${psvc:-xdg-desktop-portal} 运行中$pdesc"
+                else
+                    pass "Portal: ${psvc:-xdg-desktop-portal} 运行中$pdesc"
+                fi
+            elif [[ -n "${XDG_CURRENT_DESKTOP:-}" ]]; then
+                note "Portal: ${psvc:-xdg-desktop-portal} 运行中（未找到匹配「${XDG_CURRENT_DESKTOP}」的后端配置，屏幕共享可能不可用）"
+            else
+                pass "Portal: ${psvc:-xdg-desktop-portal} 运行中"
+            fi
+            pass "Portal 接口: $piface"
+        else
+            bad "Portal: xdg-desktop-portal 不可用（屏幕共享、GNOME 截图修复将无法工作）"
+        fi
+        ptypes=$(busctl --user get-property org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop \
                 org.freedesktop.portal.ScreenCast AvailableSourceTypes 2>/dev/null | awk '{print $2}')
-        [[ -n "$types" && "$types" != 0 ]] && pass "屏幕共享：portal 录屏可用" \
+        [[ -n "$ptypes" && "$ptypes" != 0 ]] && pass "屏幕共享：portal 录屏可用" \
             || bad "屏幕共享：xdg-desktop-portal 没有可用的 ScreenCast 实现"
     else
         note "没有 busctl，跳过 portal 检查"
