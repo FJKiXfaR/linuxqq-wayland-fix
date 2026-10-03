@@ -24,6 +24,10 @@
  *   3. 包装函数里自己走一遍 xdg-desktop-portal ScreenCast 流程（会弹出合成器的
  *      选择框），把真正的 PipeWire fd 和 node id 换进去；断开时关闭 portal 会话。
  *
+ * 另外修正 QQ 采集代码的另一个 bug：Wayland 采集每帧都会重建采集用的上传纹理和
+ * PBO（尺寸没变也不会跳过），4K 下每帧多出两个 31.6MB 的 DRM GEM，i915 上不回收，
+ * drm-total-system0 无限增长直到 OOM。见「7. 共享时每帧重建上传纹理与 PBO」。
+ *
  * 另外在 QQ 主进程里去掉一处 Chromium 的崩溃检查（窗口几何为空时闪退，issue #1），
  * 见「6. 窗口几何为空时不再闪退」。
  *
@@ -77,15 +81,20 @@ static int from_broadcast_core(const void *caller)
 
 static char *lookup_env(const char *name);
 
+/* 环境变量开关：存在且不为 "0" 即为开。 */
+static int qqwl_flag(const char *name)
+{
+    const char *v = lookup_env(name);
+    return v && *v && strcmp(v, "0");
+}
+
 /* QQ_WL_NATIVE_DISABLE=1 时所有拦截都不生效，用于排查问题。 */
 static int enabled(void)
 {
     static int state = -1;
 
-    if (state < 0) {
-        const char *v = lookup_env("QQ_WL_NATIVE_DISABLE");
-        state = !(v && *v && strcmp(v, "0"));
-    }
+    if (state < 0)
+        state = !qqwl_flag("QQ_WL_NATIVE_DISABLE");
     return state;
 }
 
@@ -511,6 +520,10 @@ struct stream_info {
     struct pw_buffer *patched;
     void *orig_data;
     int32_t logged_stride;
+    /* QQ 的 MonitorCapture 对象（pw_stream_add_listener 传进来的 data），用于第 7 节。 */
+    void *capture;
+    uint32_t alloc_w, alloc_h;
+    int reuse_logged;
 };
 
 static pthread_mutex_t streams_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -562,6 +575,7 @@ static int wrap_add_listener(struct pw_stream *stream, struct spa_hook *hook,
         struct stream_info *s = calloc(1, sizeof(*s));
         if (s) {
             s->stream = stream;
+            s->capture = data;
             /* 在 QQ 自己的监听器之后注册，param_changed 时两者都会收到。 */
             real_add_listener(stream, &s->hook, &stride_events, s);
             pthread_mutex_lock(&streams_lock);
@@ -595,14 +609,75 @@ static void wrap_stream_destroy(struct pw_stream *stream)
     }
 }
 
+/* ---------- 7. 共享时每帧重建上传纹理与 PBO ---------- */
+
+/*
+ * QQ 3.2.34 的 OnStreamProcess（broadcast-core，0x52af0）每帧都会重建采集用的
+ * 上传纹理和 PBO：重建前它比较 capture+0x1f8 / capture+0x1fc 和本帧协商出的宽高，
+ * 但这两个字段在整个库的代码里只被读、从未被写，于是条件恒成立，
+ * 每帧都 glDeleteTextures + glTexImage2D 一个 宽×高×4 的纹理，非 DMA-BUF 时
+ * 再 glDeleteBuffers + glBufferData 一个同样大的 PBO。
+ *
+ * 4K 下这是每帧 2 × 31.6MB 的 DRM GEM 分配；i915 上这些对象不回收，
+ * /proc/<ppapi>/fdinfo 的 drm-total-system0 随帧数单调增长（issue 的 GEM 泄漏）。
+ *
+ * QQ 把 MonitorCapture 对象作为 pw_stream_add_listener 的 data 传了进来，
+ * 而这正是本库已经拦的函数，所以这里替它把「已分配的宽高」写回去：
+ * 尺寸没变时让 QQ 跳过重建，只在第一帧（和尺寸真的变了的那一帧）放行。
+ *
+ * 对象用 capture+0x1d0 处存的 pw_stream 指针来确认，对不上就什么都不做（并报一行）。
+ * QQ_WL_FRAME_REUSE_DISABLE=1 可以关掉。
+ */
+#define QQCAP_STREAM  0x1d0   /* MonitorCapture 里存本流 pw_stream 的位置 */
+#define QQCAP_FRAME_W 0x1f8   /* 已分配的上传纹理宽 */
+#define QQCAP_FRAME_H 0x1fc   /* 已分配的上传纹理高 */
+#define QQCAP_TEXTURE 0x204   /* 上传纹理名，0 表示还没建过 */
+
+static void keep_frame_buffers(struct stream_info *s, struct pw_stream *stream)
+{
+    uint32_t tex;
+
+    if (*(void **)((char *)s->capture + QQCAP_STREAM) != stream) {
+        if (!s->reuse_logged) {
+            s->reuse_logged = -1;
+            LOG("capture layout mismatch at +%#x, texture reuse off (QQ changed?)",
+                (long)getpid(), (unsigned)QQCAP_STREAM);
+        }
+        return;
+    }
+
+    tex = *(uint32_t *)((char *)s->capture + QQCAP_TEXTURE);
+    if (tex && s->alloc_w == s->width && s->alloc_h == s->height) {
+        *(uint32_t *)((char *)s->capture + QQCAP_FRAME_W) = s->width;
+        *(uint32_t *)((char *)s->capture + QQCAP_FRAME_H) = s->height;
+        if (!s->reuse_logged) {
+            s->reuse_logged = 1;
+            LOG("reuse capture texture: %ux%u (skip per-frame glTexImage2D/glBufferData)",
+                (long)getpid(), s->width, s->height);
+        }
+        return;
+    }
+    /* 还没建过，或尺寸变了：放行这一帧，QQ 自己会重建。 */
+    s->alloc_w = s->width;
+    s->alloc_h = s->height;
+}
+
 static struct pw_buffer *wrap_dequeue(struct pw_stream *stream)
 {
     struct pw_buffer *b = real_dequeue(stream);
     struct stream_info *s;
 
+    /*
+     * 必须赶在 QQ 自己的 OnStreamProcess 检查之前写，而 OnStreamProcess 就是
+     * 通过 pw_stream_dequeue_buffer 进到这里的，所以放在返回之前，与有没有帧无关。
+     */
+    s = find_stream(stream);
+    if (s && s->capture && s->width && s->height && enabled() &&
+        !qqwl_flag("QQ_WL_FRAME_REUSE_DISABLE"))
+        keep_frame_buffers(s, stream);
+
     if (!b || !b->buffer || b->buffer->n_datas < 1 || !enabled())
         return b;
-    s = find_stream(stream);
     if (!s || !s->width || !s->height)
         return b;
 
@@ -971,10 +1046,10 @@ static int is_qq_main_process(void)
 __attribute__((constructor))
 static void geometry_fix_init(void)
 {
-    const char *v = lookup_env("QQ_WL_GEOMETRY_FIX_DISABLE");
     struct geom_scan s = { 0 };
 
-    if (!enabled() || (v && *v && strcmp(v, "0")) || !is_qq_main_process())
+    if (!enabled() || qqwl_flag("QQ_WL_GEOMETRY_FIX_DISABLE") ||
+        !is_qq_main_process())
         return;
 
     dl_iterate_phdr(geom_scan_main, &s);
