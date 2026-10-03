@@ -432,10 +432,88 @@ static void write_all(int fd, const unsigned char *p, long n)
     }
 }
 
+/*
+ * QQ 复制时就把各格式的数据取好缓存起来，粘贴时直接给缓存。
+ * Hyprland 等合成器的 xwm 一看到 Wayland 剪贴板变化，就会马上用自己的代理窗口接管 X11 CLIPBOARD，
+ * QQ 随即失去所有权；之后再向 X11 要数据，问到的是合成器，合成器又回头向我们的数据源要，
+ * 而我们正卡在 fetch 里等它，最终超时，谁都拿不到内容。
+ */
+#define CACHE_LIMIT (64L << 20)   /* 缓存总量上限，超出的格式退回粘贴时再取 */
+
+static struct { char *mime; unsigned char *data; long len; } cache[MAX_MIMES];
+static int n_cache;
+
+static void cache_clear(void)
+{
+    for (int i = 0; i < n_cache; ++i) {
+        free(cache[i].mime);
+        free(cache[i].data);
+    }
+    n_cache = 0;
+}
+
+static int cache_find(const char *mime)
+{
+    for (int i = 0; i < n_cache; ++i)
+        if (!strcmp(cache[i].mime, mime))
+            return i;
+    return -1;
+}
+
+static int is_text_mime(const char *m)
+{
+    return !strncmp(m, "text/plain", 10) || !strcmp(m, "UTF8_STRING") ||
+           !strcmp(m, "STRING") || !strcmp(m, "TEXT");
+}
+
+static void cache_fill(void)
+{
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    cache_clear();
+    long total = 0;
+    int text = -1;   /* 几种文本格式取的都是同一个 UTF8_STRING，只向 QQ 要一次 */
+    for (int i = 0; i < n_offered && n_cache < MAX_MIMES; ++i) {
+        const char *mime = offered[i];
+        if (!strcmp(mime, MARKER_MIME))
+            continue;
+        unsigned char *buf = NULL;
+        long n;
+        if (is_text_mime(mime) && text >= 0) {
+            n = cache[text].len;
+            buf = malloc(n + 1);
+            memcpy(buf, cache[text].data, n + 1);
+        } else {
+            n = fetch_for_mime(mime, &buf);
+        }
+        if (n < 0 || total + n > CACHE_LIMIT) {
+            free(buf);
+            continue;
+        }
+        if (is_text_mime(mime) && text < 0)
+            text = n_cache;
+        total += n;
+        cache[n_cache].mime = strdup(mime);
+        cache[n_cache].data = buf;
+        cache[n_cache].len = n;
+        ++n_cache;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    LOG("cached %d of %d formats from QQ (%ld bytes, %ld ms)", n_cache, n_offered - 1, total,
+        (end.tv_sec - start.tv_sec) * 1000 + (end.tv_nsec - start.tv_nsec) / 1000000);
+}
+
 static void source_send(void *data, struct ext_data_control_source_v1 *src,
                         const char *mime, int32_t fd)
 {
     (void)data; (void)src;
+    int c = cache_find(mime);
+    if (c >= 0) {
+        write_all(fd, cache[c].data, cache[c].len);
+        LOG("paste request %s: %ld bytes (cached)", mime, cache[c].len);
+        close(fd);
+        return;
+    }
     unsigned char *buf;
     long n = fetch_for_mime(mime, &buf);
     if (n >= 0) {
@@ -452,8 +530,10 @@ static void source_cancelled(void *data, struct ext_data_control_source_v1 *src)
 {
     (void)data;
     ext_data_control_source_v1_destroy(src);
-    if (src == source)
+    if (src == source) {
         source = NULL;
+        cache_clear();
+    }
 }
 
 static const struct ext_data_control_source_v1_listener source_listener = {
@@ -1039,6 +1119,9 @@ static void on_qq_copy(void)
         return;
     }
 
+    /* 必须在 set_selection 之前取：之后合成器可能马上从 QQ 手里接管 X11 CLIPBOARD */
+    cache_fill();
+
     if (source)
         ext_data_control_source_v1_destroy(source);
     source = dcm ? ext_data_control_manager_v1_create_data_source(dcm)
@@ -1159,6 +1242,9 @@ int XSetSelectionOwner(Display *dpy, Atom selection, Window owner, Time t)
             x11_copy_owner = owner;
             clock_gettime(CLOCK_MONOTONIC, &x11_copy_at);
             __atomic_add_fetch(&copy_generation, 1, __ATOMIC_SEQ_CST);
+            /* Xlib 会缓冲请求：不先发出去，后台线程取 TARGETS 时主人还是上一个，
+             * 只能失败后等 200ms 重试。这里在 QQ 自己的线程上，flush 是安全的。 */
+            XFlush(dpy);
             wake();
         }
     }
