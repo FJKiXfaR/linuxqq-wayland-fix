@@ -1242,6 +1242,9 @@ int XSetSelectionOwner(Display *dpy, Atom selection, Window owner, Time t)
             x11_copy_owner = owner;
             clock_gettime(CLOCK_MONOTONIC, &x11_copy_at);
             __atomic_add_fetch(&copy_generation, 1, __ATOMIC_SEQ_CST);
+            /* Xlib 会缓冲请求：不先发出去，后台线程取 TARGETS 时主人还是上一个，
+             * 只能失败后等 200ms 重试。这里在 QQ 自己的线程上，flush 是安全的。 */
+            XFlush(dpy);
             wake();
         }
     }
