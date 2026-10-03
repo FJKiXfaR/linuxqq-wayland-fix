@@ -53,6 +53,8 @@
 
 Wayland 屏幕共享时 ppapi 进程的 DRM GEM 泄漏（Intel 显卡上 4K 整屏约一分钟涨到十几 GB）已修，见 [原理详解](docs/原理详解.md)。
 
+语音通话时对方 3 秒多才听到自己说话（QQ 打开麦克风时没设缓冲，服务端默认给 2 秒）已修，见 [原理详解](docs/原理详解.md) §7.7。
+
 XWayaland 和各个桌面的 xdg-desktop-portal 需要正常工作，以下是兼容性调查表格。
 
 测试环境：Arch Linux + 7940h + 780M，纯净安装 Niri、Hyprland、KDE Plasma、GNOME 最新版本

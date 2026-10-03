@@ -12,6 +12,7 @@
 #   QQ_WAYLAND_FIX_ANGLE      ANGLE 后端：auto（默认，检测到 Vulkan 时用 vulkan）| vulkan | swiftshader | off
 #   QQ_WL_NATIVE_DISABLE=1    关闭屏幕共享修复（排查问题用）
 #   QQ_WL_FRAME_REUSE_DISABLE=1 关闭「复用采集纹理」（排查共享时内存增长用）
+#   QQ_VOICE_LATENCY_MSEC     语音通话麦克风的录音缓冲毫秒数（默认 30；0 关闭，回到 QQ 原本的 2 秒）
 #   QQ_CLIPBOARD_FIX_DISABLE=1 关闭剪贴板修复（排查问题用）
 #   QQ_CLIPBOARD_FIX_FORCE=1   强制启用剪贴板修复（KDE 上默认禁用，仅供测试）
 #   QQ_SCREENSHOT_FIX_DISABLE=1 关闭截图防闪退（排查问题用）
