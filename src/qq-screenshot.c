@@ -61,6 +61,7 @@ struct output {
     char name[64];
     uint32_t *pix; /* 截到的画面，0x00RRGGBB */
     int w, h;
+    int mode_w, mode_h, scale; /* wl_output 的原生模式尺寸 / scale */
     struct output *next;
 };
 
@@ -78,10 +79,18 @@ static void out_geometry(void *d, struct wl_output *o, int32_t x, int32_t y, int
 }
 static void out_mode(void *d, struct wl_output *o, uint32_t f, int32_t w, int32_t h, int32_t r)
 {
-    (void)d; (void)o; (void)f; (void)w; (void)h; (void)r;
+    struct output *out = d;
+    (void)o; (void)f; (void)r;
+    out->mode_w = w;
+    out->mode_h = h;
 }
 static void out_done(void *d, struct wl_output *o) { (void)d; (void)o; }
-static void out_scale(void *d, struct wl_output *o, int32_t s) { (void)d; (void)o; (void)s; }
+static void out_scale(void *d, struct wl_output *o, int32_t s)
+{
+    struct output *out = d;
+    (void)o;
+    out->scale = s > 0 ? s : 1;
+}
 static void out_name(void *d, struct wl_output *o, const char *name)
 {
     struct output *out = d;
@@ -294,6 +303,55 @@ static int capture_all(struct capture *c)
 }
 
 /* ---------------- 按 X 的布局拼成根窗口画面 ---------------- */
+
+/*
+ * 轻量查询指定 Wayland 输出的原生模式尺寸和 scale（不截帧）。
+ * XGetWindowAttributes 可能被频繁调用，结果按输出名缓存 5 秒。
+ */
+static int query_output_mode(const char *want, int *mode_w, int *mode_h, int *scale)
+{
+    static char c_name[64];
+    static int c_w, c_h, c_scale;
+    static struct timespec c_at;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (c_name[0] && !strcmp(c_name, want) &&
+        (now.tv_sec - c_at.tv_sec) * 1000 + (now.tv_nsec - c_at.tv_nsec) / 1000000 < 5000) {
+        *mode_w = c_w;
+        *mode_h = c_h;
+        *scale = c_scale;
+        return 1;
+    }
+
+    struct capture c = { 0 };
+    c.dpy = wl_display_connect(NULL);
+    if (!c.dpy)
+        return 0;
+    struct wl_registry *reg = wl_display_get_registry(c.dpy);
+    wl_registry_add_listener(reg, &registry_listener, &c);
+    wl_display_roundtrip(c.dpy);
+    wl_display_roundtrip(c.dpy); /* wl_output.name/mode/scale */
+    wl_registry_destroy(reg);
+
+    int found = 0;
+    for (struct output *o = c.outputs; o; o = o->next)
+        if (!strcmp(o->name, want) && o->mode_w > 0 && o->mode_h > 0) {
+            *mode_w = o->mode_w;
+            *mode_h = o->mode_h;
+            *scale = o->scale > 0 ? o->scale : 1;
+            found = 1;
+            break;
+        }
+    capture_free(&c);
+    if (found) {
+        snprintf(c_name, sizeof c_name, "%s", want);
+        c_w = *mode_w;
+        c_h = *mode_h;
+        c_scale = *scale;
+        c_at = now;
+    }
+    return found;
+}
 
 typedef struct {
     Atom name;
@@ -705,7 +763,8 @@ static uint32_t *monitor_image(Display *dpy, const char *name,
 
     if (!pix) {
         struct capture c;
-        if (capture_all(&c) == 0) {
+        int cap = capture_all(&c);
+        if (cap == 0) {
             pix = calloc((size_t)w * h, 4);
             if (pix) {
                 int found = 0;
@@ -721,8 +780,8 @@ static uint32_t *monitor_image(Display *dpy, const char *name,
                     pix = NULL;
                 }
             }
-            capture_free(&c);
         }
+        capture_free(&c);
     }
 
     if (!pix && !kde_first && kde_usable())
@@ -764,7 +823,8 @@ static uint32_t *root_image(Display *dpy, Window root, int *w, int *h)
 
     uint32_t *pix = NULL;
     struct capture c;
-    if (capture_all(&c) == 0) {
+    int cap = capture_all(&c);
+    if (cap == 0) {
         pix = calloc((size_t)rw * rh, 4);
         if (pix) {
             void *xrandr = dlopen("libXrandr.so.2", RTLD_LAZY | RTLD_LOCAL);
@@ -793,8 +853,8 @@ static uint32_t *root_image(Display *dpy, Window root, int *w, int *h)
                     }
             LOG("captured %ux%u root from Wayland (%d monitor(s) matched)", rw, rh, placed);
         }
-        capture_free(&c);
     }
+    capture_free(&c);
 
     if (!pix && kde_usable()) {
         int kw = 0, kh = 0;
@@ -982,6 +1042,17 @@ int XGetWindowAttributes(Display *dpy, Window w, XWindowAttributes *attr)
         char name[64];
         int mx, my, mw, mh;
         if (target_monitor(dpy, name, sizeof name, &mx, &my, &mw, &mh)) {
+            int mode_w = 0, mode_h = 0, scale = 1;
+            if (query_output_mode(name, &mode_w, &mode_h, &scale) &&
+                (mode_w != mw || mode_h != mh)) {
+                /* QQ 的截图覆盖层按设备像素工作：KWin/GNOME 的 XWayland 直接报原生
+                 * 尺寸，Hyprland 这类报逻辑尺寸；上报逻辑尺寸会让原生截图 1:1 画进
+                 * scale 倍缓冲，只填左上角。统一上报 Wayland 输出的原生模式尺寸。 */
+                LOG("single-monitor: %s scale %d, report native %dx%d (x11 %dx%d)",
+                    name, scale, mode_w, mode_h, mw, mh);
+                mw = mode_w;
+                mh = mode_h;
+            }
             LOG("single-monitor: report screen as %s %dx%d", name, mw, mh);
             attr->width = mw;
             attr->height = mh;
