@@ -51,6 +51,8 @@
 
 ## 注意事项和兼容性
 
+Intel 显卡用户疑似会出现内存泄露问题，尝试时建议显示程序最大可用内存再启动（可利用 AI Agent）。
+
 XWayaland 和各个桌面的 xdg-desktop-portal 需要正常工作，以下是兼容性调查表格。
 
 测试环境：Arch Linux 纯净安装 Niri、Hyprland、KDE Plasma、GNOME 最新版本
