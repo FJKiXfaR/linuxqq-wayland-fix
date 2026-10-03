@@ -279,6 +279,29 @@ doctor() {
         bad "找不到 $CLIPBOARD_LIB"
     fi
     [[ -r "$SCREENSHOT_LIB" ]] && pass "截图防闪退: $SCREENSHOT_LIB" || bad "找不到 $SCREENSHOT_LIB"
+    # 截图链：GNOME/KDE 没有 wlr-screencopy，必须靠 helper 走门户（GNOME）或 KWin ScreenShot2（KDE）。
+    # 库里没有门户分支（0.2.10 之前的包）或 helper/desktop 缺失时，截图会静默地全黑，日志里才有原因。
+    case "${XDG_CURRENT_DESKTOP:-}" in
+        *GNOME*|*KDE*)
+            local sh_help sh_share sh_desk
+            sh_help="$LIBDIR/qq-screenshot-helper"
+            sh_share="$(dirname "$(dirname "$LIBDIR")")"     # /usr 或 /usr/local
+            sh_desk="$sh_share/share/applications/qq-screenshot-helper.desktop"
+            if [[ -r "$SCREENSHOT_LIB" ]]; then
+                # 标记用门户路径的开关名：真正发起门户调用的是 helper 进程，库里没有 D-Bus 接口串。
+                # 实测：含门户路径的版本有这个串，0.2.10 之前的没有。
+                if grep -aq 'QQ_SCREENSHOT_PORTAL' "$SCREENSHOT_LIB"; then
+                    pass "截图: libqq-screenshot.so 含 GNOME 门户分支"
+                else
+                    note "截图: 这份 libqq-screenshot.so 没有 GNOME 门户分支（0.2.10 之前的版本），GNOME 下截图会全黑，请升级本包"
+                fi
+            fi
+            [[ -x "$sh_help" ]] && pass "截图: helper 已安装（$sh_help）" \
+                || note "截图: 缺 qq-screenshot-helper，GNOME/KDE 下截图会全黑（重装本包或 make install）"
+            [[ -r "$sh_desk" ]] && pass "截图: helper 的 .desktop 已安装" \
+                || note "截图: 缺 qq-screenshot-helper.desktop（门户/KWin 用它认调用者）"
+            ;;
+    esac
     [[ -r "$BORDERFIX_LIB" ]] && pass "窗口修补（共享边框/截图覆盖层）: $BORDERFIX_LIB" || note "找不到 $BORDERFIX_LIB（共享边框会变成窗口、截图覆盖层不平铺）"
     [[ -n "${WAYLAND_DISPLAY:-}" ]] && pass "Wayland 会话: $WAYLAND_DISPLAY" || note "WAYLAND_DISPLAY 为空，不在 Wayland 会话里？"
     [[ -n "${DISPLAY:-}" ]] && pass "XWayland: $DISPLAY" || bad "DISPLAY 为空：QQ 的界面与剪贴板仍需要 XWayland"
