@@ -3,7 +3,7 @@
 
 修复 Linux QQ 以 **Wayland** 运行时的屏幕分享、剪贴板和截图异常。
 
->一分钟视频介绍：[B 站](https://www.bilibili.com/video/BV__________)
+>一分钟视频介绍：[B 站](https://www.bilibili.com/video/BV1MKa66VEPS)
 
 目前以 Wayland 模式运行 QQ 会有以下几个异常：
 
