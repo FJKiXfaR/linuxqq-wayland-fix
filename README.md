@@ -95,7 +95,7 @@ QQ 本体需另外安装（[官方下载](https://im.qq.com/linuxqq/)）。
     sudo make install PREFIX=/usr
     ```
   
-  - NixOS（Flake）
+- NixOS（Flake）
   
   本仓库自带 `flake.nix`，提供 `packages.default`、`overlays.default` 和 `nixosModules.default`。NixOS 用户推荐直接用模块：
   
