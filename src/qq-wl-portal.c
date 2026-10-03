@@ -28,6 +28,9 @@
  * PBO（尺寸没变也不会跳过），4K 下每帧多出两个 31.6MB 的 DRM GEM，i915 上不回收，
  * drm-total-system0 无限增长直到 OOM。见「7. 共享时每帧重建上传纹理与 PBO」。
  *
+ * 另外修正语音通话的麦克风延迟：语音引擎（avsdk/libAVSDKPlugin.so）打开麦克风时不给缓冲参数，
+ * 服务端按默认给 2 秒的录音分片，对方 3 秒多才听到。见「4½. 语音通话的麦克风缓冲」。
+ *
  * 另外在 QQ 主进程里去掉一处 Chromium 的崩溃检查（窗口几何为空时闪退，issue #1），
  * 见「6. 窗口几何为空时不再闪退」。
  *
@@ -42,6 +45,8 @@
 #include <pthread.h>
 #include <pipewire/stream.h>
 #include <pulse/introspect.h>
+#include <pulse/stream.h>
+#include <pulse/timeval.h>
 #include <spa/param/video/format-utils.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -62,7 +67,7 @@
 
 /* ---------- 调用方判断 ---------- */
 
-static int from_broadcast_core(const void *caller)
+static int from_library(const void *caller, const char *lib)
 {
     Dl_info info;
 
@@ -70,7 +75,12 @@ static int from_broadcast_core(const void *caller)
         return 0;
 
     const char *base = strrchr(info.dli_fname, '/');
-    return !strcmp(base ? base + 1 : info.dli_fname, "broadcast-core.so");
+    return !strcmp(base ? base + 1 : info.dli_fname, lib);
+}
+
+static int from_broadcast_core(const void *caller)
+{
+    return from_library(caller, "broadcast-core.so");
 }
 
 /* ---------- 总开关 ---------- */
@@ -1010,6 +1020,90 @@ pa_operation *pa_context_get_source_info_by_name(pa_context *c,
         return op;
     }
     return real(c, name, cb, userdata);
+}
+
+/* ---------- 4½. 语音通话的麦克风缓冲 ---------- */
+
+/*
+ * 语音通话的音频引擎在 avsdk/libAVSDKPlugin.so（腾讯 QAV RTC SDK，日志前缀 TRAE），
+ * 它这样打开麦克风（3.2.34-53644，libAVSDKPlugin.so+0xb13258）：
+ *     pa_stream_connect_record(s, dev, NULL,
+ *                              ADJUST_LATENCY | AUTO_TIMING_UPDATE | INTERPOLATE_TIMING);
+ * attr 为 NULL 时服务端按默认分片：pipewire-pulse 的 pulse.default.frag 是 96000/48000，
+ * 即 2 秒（PulseAudio 也是 2 秒）；没有 fragsize，ADJUST_LATENCY 也不起作用。于是录音每攒满
+ * 2 秒才交给 QQ 一次，对方 3 秒多才听到（issue #17，实测 fragsize=384000 = 2.0s）。
+ *
+ * 修法与 libpulse 处理 PULSE_LATENCY_MSEC 一样：fragsize 设成 30ms 的字节数，其余交给服务端，
+ * 加上 ADJUST_LATENCY。但只改 libAVSDKPlugin 没给 fragsize 的录音流：直接设 PULSE_LATENCY_MSEC
+ * 会把 Chromium 自己给了参数的播放流也一起改小。
+ *
+ * QQ_VOICE_LATENCY_MSEC 改毫秒数（默认 30），设为 0 关闭。设了 PULSE_LATENCY_MSEC 时不插手
+ * （libpulse 会按它来）。
+ */
+static unsigned voice_latency_ms(void)
+{
+    static int ms = -1;
+
+    if (ms < 0) {
+        /* 不用 strtol：新 glibc 头文件会把它换成 __isoc23_strtol（GLIBC_2.38）。 */
+        const char *v = lookup_env("QQ_VOICE_LATENCY_MSEC");
+
+        ms = 30;
+        if (v && *v) {
+            int n = 0;
+            while (*v >= '0' && *v <= '9' && n <= 2000)
+                n = n * 10 + (*v++ - '0');
+            if (!*v)
+                ms = n > 2000 ? 2000 : n;
+        }
+    }
+    return (unsigned)ms;
+}
+
+int pa_stream_connect_record(pa_stream *s, const char *dev,
+                             const pa_buffer_attr *attr, pa_stream_flags_t flags)
+{
+    static int (*real)(pa_stream *, const char *, const pa_buffer_attr *,
+                       pa_stream_flags_t);
+    static const pa_sample_spec *(*get_spec)(pa_stream *);
+    static int (*spec_valid)(const pa_sample_spec *);
+    static size_t (*usec_to_bytes)(pa_usec_t, const pa_sample_spec *);
+    static int logged;
+
+    if (!real) {
+        real = real_pa("pa_stream_connect_record");
+        get_spec = real_pa("pa_stream_get_sample_spec");
+        spec_valid = real_pa("pa_sample_spec_valid");
+        usec_to_bytes = real_pa("pa_usec_to_bytes");
+        if (!real)
+            return -PA_ERR_NOTSUPPORTED;
+    }
+
+    unsigned ms = voice_latency_ms();
+    const pa_sample_spec *spec;
+    size_t bytes;
+
+    if (!ms || !enabled() || (attr && attr->fragsize && attr->fragsize != (uint32_t)-1) ||
+        lookup_env("PULSE_LATENCY_MSEC") ||
+        !from_library(__builtin_return_address(0), "libAVSDKPlugin.so") ||
+        !get_spec || !spec_valid || !usec_to_bytes ||
+        !(spec = get_spec(s)) || !spec_valid(spec) ||
+        !(bytes = usec_to_bytes((pa_usec_t)ms * PA_USEC_PER_MSEC, spec)))
+        return real(s, dev, attr, flags);
+
+    pa_buffer_attr a;
+    if (attr)
+        a = *attr;
+    else
+        memset(&a, 0xff, sizeof(a));   /* 全部 (uint32_t)-1：交给服务端 */
+    a.fragsize = (uint32_t)bytes;
+
+    if (!logged) {
+        logged = 1;
+        LOG("voice capture: libAVSDKPlugin gave no fragsize (server default is 2 s), "
+            "using %zu bytes = %u ms", (long)getpid(), bytes, ms);
+    }
+    return real(s, dev, &a, flags | PA_STREAM_ADJUST_LATENCY);
 }
 
 /* ---------- 6. 窗口几何为空时不再闪退 ---------- */
