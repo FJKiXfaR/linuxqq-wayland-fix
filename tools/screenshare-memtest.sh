@@ -5,7 +5,7 @@
 #   bash screenshare-memtest.sh [时长秒数=180] [采样间隔秒数=2]
 # 运行中按提示操作 QQ；Ctrl+C 提前结束。报告保存在当前目录 qq-memtest-*.txt。
 #
-# 环境变量：QQ_WAYLAND_FIX_LOG  本库日志（默认 $XDG_RUNTIME_DIR/linuxqq-wayland-fix.log）
+# 环境变量：QQ_WAYLAND_FIX_LOG  本库日志（默认自动在 $XDG_RUNTIME_DIR、/run/user/<uid>、/tmp 里找）
 set -u
 
 DURATION=${1:-180}
@@ -14,7 +14,17 @@ WARMUP=10          # 每段共享开头这么多秒不计入增速（首帧建�
 PASS_RATE=2        # MiB/s，低于此视为稳定
 FAIL_RATE=20       # MiB/s，高于此视为仍在泄漏（修复前是 25～1400 MiB/s）
 
-LOG=${QQ_WAYLAND_FIX_LOG:-${XDG_RUNTIME_DIR:-/tmp}/linuxqq-wayland-fix.log}
+# 启动器写到 ${XDG_RUNTIME_DIR:-/tmp}；运行本脚本的终端不一定有 XDG_RUNTIME_DIR（如 niri 下），
+# 所以几个候选位置都看，取最新的那个。
+find_log() {
+    local f best=""
+    for f in ${XDG_RUNTIME_DIR:+"$XDG_RUNTIME_DIR/linuxqq-wayland-fix.log"} \
+             "/run/user/$(id -u)/linuxqq-wayland-fix.log" /tmp/linuxqq-wayland-fix.log; do
+        [ -f "$f" ] && { [ -z "$best" ] || [ "$f" -nt "$best" ]; } && best=$f
+    done
+    echo "${best:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/linuxqq-wayland-fix.log}"
+}
+LOG=${QQ_WAYLAND_FIX_LOG:-$(find_log)}
 REPORT="qq-memtest-$(date +%Y%m%d-%H%M%S).txt"
 SAMPLES=$(mktemp)
 LOG_START=0
