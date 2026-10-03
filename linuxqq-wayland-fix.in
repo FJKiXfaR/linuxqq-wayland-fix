@@ -63,6 +63,38 @@ qq_main_pid() {
     done
 }
 
+# 运行中 QQ 主进程的可执行文件；QQ 没运行时退回 /opt/QQ/qq。
+# AppImage 版的 exe 在挂载目录里（如 /tmp/.mount_XXXX/.../qq）。
+qq_runtime_exe() {
+    local p exe
+    p=$(qq_main_pid)
+    if [[ -n "$p" ]]; then
+        exe=$(readlink -f "/proc/$p/exe" 2>/dev/null)
+        [[ -n "$exe" && -f "$exe" ]] && { echo "$exe"; return 0; }
+    fi
+    [[ -x /opt/QQ/qq ]] && echo /opt/QQ/qq
+}
+
+# QQ 的“安装根”（含 resources/app 的目录）：安装版是 /opt/QQ，AppImage 在挂载目录里。
+# 从运行中主进程的 exe 向上找；找不到时退回 AppImage 挂载根/exe 所在目录（find 仍能搜到）。
+qq_runtime_dir() {
+    local exe d i
+    exe=$(qq_runtime_exe) || return 1
+    d=$(dirname "$exe")
+    for i in 1 2 3 4 5; do
+        if [[ -e "$d/resources/app" || -e "$d/broadcast-core.so" ]]; then
+            echo "$d"
+            return 0
+        fi
+        [[ "$d" == "/" || -z "$d" ]] && break
+        d=$(dirname "$d")
+    done
+    case "$exe" in
+        /tmp/.mount_*) echo "$exe" | cut -d/ -f1-3 ;; # AppImage 挂载根
+        *) echo "$(dirname "$exe")" ;;
+    esac
+}
+
 # 系统里有没有可用的 Vulkan 驱动（ICD 声明）。
 vulkan_available() {
     local f
@@ -155,13 +187,28 @@ doctor() {
 
     echo
     echo "[QQ 内部实现（QQ 更新后用来判断修复是否还适用）]"
-    local vdir bc av wrapper
+    local vdir rdir bc av wrapper
     vdir=$(qq_version_dir)
-    bc=$(find "$vdir" /opt/QQ -name broadcast-core.so -print -quit 2>/dev/null)
-    av=$(find "$vdir" /opt/QQ -name libAVSDKPlugin.so -print -quit 2>/dev/null)
-    wrapper=$(ls "$vdir/wrapper.node" /opt/QQ/resources/app/wrapper.node 2>/dev/null | head -1)
+    rdir=$(qq_runtime_dir)
+    local roots=()
+    [[ -n "$vdir" ]] && roots+=("$vdir")
+    [[ -n "$rdir" ]] && roots+=("$rdir")
+    roots+=(/opt/QQ)
+    bc=$(find "${roots[@]}" -name broadcast-core.so -print -quit 2>/dev/null)
+    av=$(find "${roots[@]}" -name libAVSDKPlugin.so -print -quit 2>/dev/null)
+    local wrapper_candidates=()
+    [[ -n "$vdir" ]] && wrapper_candidates+=("$vdir/wrapper.node")
+    if [[ -n "$rdir" ]]; then
+        wrapper_candidates+=("$rdir/wrapper.node" "$rdir/resources/app/wrapper.node")
+    fi
+    wrapper_candidates+=(/opt/QQ/resources/app/wrapper.node)
+    wrapper=$(ls "${wrapper_candidates[@]}" 2>/dev/null | head -1)
     if [[ -z "$bc" ]]; then
-        bad "找不到 broadcast-core.so（QQ 版本目录: ${vdir:-?}）"
+        if [[ -z "$rdir" && -e /opt/linuxqq-appimage ]]; then
+            note "找不到 broadcast-core.so：AppImage 需要 QQ 运行中才能检查内部实现（启动 QQ 后再运行 --doctor）"
+        else
+            bad "找不到 broadcast-core.so（QQ 版本目录: ${vdir:-?}）"
+        fi
     else
         grep -aq MonitorCapture_WaylandProc "$bc" \
             && pass "屏幕共享：存在 Wayland 采集线程" \
@@ -178,7 +225,8 @@ doctor() {
             || note "共享电脑声音：查询方式变了，可能无声"
     fi
     # 窗口几何为空时的崩溃检查（见 qq-wl-portal.c「6.」）：特征码必须恰好出现一次
-    local qqbin=/opt/QQ/qq offs
+    local qqbin offs
+    qqbin=$(qq_runtime_exe)
     if [[ -f "$qqbin" ]]; then
         offs=$(LC_ALL=C grep -obaF $'\x44\x8b\x7e\x08\x45\x85\xff\x74' "$qqbin" 2>/dev/null | cut -d: -f1)
         if [[ "$offs" =~ ^[0-9]+$ ]] &&
