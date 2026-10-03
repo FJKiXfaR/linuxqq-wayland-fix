@@ -51,7 +51,7 @@
 
 ## 注意事项和兼容性
 
-Intel 显卡用户疑似会出现内存泄露问题，尝试时建议限制程序最大可用内存再启动（可利用 AI Agent）。
+Wayland 屏幕共享时 ppapi 进程的 DRM GEM 泄漏（Intel 显卡上 4K 整屏约一分钟涨到十几 GB）已修，见 [原理详解](docs/原理详解.md)。
 
 XWayaland 和各个桌面的 xdg-desktop-portal 需要正常工作，以下是兼容性调查表格。
 
