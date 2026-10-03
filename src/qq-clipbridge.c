@@ -597,6 +597,9 @@ static pid_t window_pid(Window w)
             get_pid = dlsym(h, "XResGetClientPid");
             destroy = dlsym(h, "XResClientIdsDestroy");
         }
+        if (!query || !get_pid || !destroy)
+            LOG("libXRes.so.1 unavailable: cannot tell the compositor's X11 clipboard proxy "
+                "from other X11 programs (install libxres / libxres1 / libXres)");
     }
     if (!query || !get_pid || !destroy)
         return -1;
