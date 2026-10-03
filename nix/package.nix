@@ -103,15 +103,17 @@ stdenv.mkDerivation (finalAttrs: {
       'ls "$QQ_CRASH_DIR"/tomb_*.txt >/dev/null 2>&1 || return 0'
 
     # 2. QQ 装在 store 里，没有 /opt/QQ，--doctor 的「QQ 内部实现」与共享防闪退
-    #    特征码检查会全部找不到目录。QQ_WAYLAND_FIX_QQ_ROOT 由下面的 wrapper 指向
+    #    特征码检查会找不到 QQ。QQ_WAYLAND_FIX_QQ_ROOT 由下面的 wrapper 指向
     #    store 里的 .../opt/QQ；没设这个变量时保持上游的 /opt/QQ 行为。
+    #    qq_runtime_exe 找不到运行中的 QQ 时的回退路径也要跟着走 store
+    #    （qq_runtime_dir、共享防闪退的 qqbin 都由它得来）。
     substituteInPlace $out/bin/linuxqq-wayland-fix \
       --replace-fail 'elif [[ -d /opt/QQ/resources/app ]]; then' \
       'elif [[ -d "''${QQ_WAYLAND_FIX_QQ_ROOT:-/opt/QQ}/resources/app" ]]; then' \
       --replace-fail '        echo /opt/QQ/resources/app' \
       '        echo "''${QQ_WAYLAND_FIX_QQ_ROOT:-/opt/QQ}/resources/app"' \
-      --replace-fail 'local qqbin=/opt/QQ/qq offs' \
-      'local qqbin="''${QQ_WAYLAND_FIX_QQ_ROOT:-/opt/QQ}/qq" offs'
+      --replace-fail '    [[ -x /opt/QQ/qq ]] && echo /opt/QQ/qq' \
+      '    [[ -x "''${QQ_WAYLAND_FIX_QQ_ROOT:-/opt/QQ}/qq" ]] && echo "''${QQ_WAYLAND_FIX_QQ_ROOT:-/opt/QQ}/qq"'
 
     # 3. 上游在 PATH 里只找 linuxqq（AppImage 包的命令名）。nixpkgs 的 QQ 命令
     #    叫 qq，加上它，这样没有写死 QQ 路径时（没开 allowUnfree，见 flake.nix）
