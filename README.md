@@ -51,7 +51,7 @@
 
 ## 注意事项和兼容性
 
-XWayaland需要正常工作，以下是兼容性调查表格。
+XWayaland 和各个桌面的 xdg-desktop-portal 需要正常工作，以下是兼容性调查表格。
 
 测试环境：Arch Linux 纯净安装 Niri、Hyprland、KDE Plasma、GNOME 最新版本
 
