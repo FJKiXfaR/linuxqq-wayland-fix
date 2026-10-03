@@ -139,11 +139,11 @@ QQ 本体需另外安装（[官方下载](https://im.qq.com/linuxqq/)）。
 linuxqq-wayland-fix --doctor
 ```
 
-## 已知问题
+## 已知问题或解决办法
 
 - 使用 Easy Effects 时，需在它的输入和输入排除名单里都加上 `TRAE`，否则 QQ 一开共享就会崩；
 - 流畅度取决于 QQ 自己的编码，大概只有 20 帧左右；
-- 观看别人共享时画面可能花成横竖条纹，可以尝试用`QQ_WAYLAND_FIX_ANGLE=swiftshader`环境变量启动。详见 [原理详解](docs/原理详解.md#附观看共享花屏)。
+- 观看别人共享时出现花屏或者显示不全的情况可以尝试调整`QQ_WAYLAND_FIX_ANGLE`环境变量的值，具体可用的值通过`linuxqq-wayland-fix -h`命令查看。详见 [原理详解](docs/原理详解.md#附观看共享花屏)。
 
 详细说明见 [常见问题与排错](docs/常见问题与排错.md)。
 
