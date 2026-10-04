@@ -142,7 +142,7 @@ linuxqq-wayland-fix --doctor
 QQ 在 Linux 上共享屏幕时用的是它自带的软件编码器（AVSDK 里静态编入的 OpenH264），不看显卡。本仓库额外提供 `libqq-nvenc.so`，把这一路的编码器换成 NVIDIA 的 NVENC：
 
 ```bash
-QQ_NVENC=1 QQ_NVENC_ACTIVE=1 linuxqq-wayland-fix
+QQ_NVENC=1 linuxqq-wayland-fix
 ```
 
 - 需要 NVIDIA 显卡和驱动（`libnvidia-encode.so.1` 可用），并要求 `--doctor` 里出现 `NVENC：CreateH264Encoder 符号存在，入口字节与挂钩点一致`；

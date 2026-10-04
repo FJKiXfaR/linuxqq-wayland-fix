@@ -14,8 +14,7 @@
 #   QQ_WL_FRAME_REUSE_DISABLE=1 关闭「复用采集纹理」（排查共享时内存增长用）
 #   QQ_VOICE_LATENCY_MSEC     语音通话麦克风的录音缓冲毫秒数（默认 30；0 关闭，回到 QQ 原本的 2 秒）
 #   QQ_NVENC=1                屏幕共享改用 NVENC 编 H.264（实验，默认关）
-#   QQ_NVENC_ACTIVE=1         配合 QQ_NVENC=1：真正启用 NVENC 编码（默认只挂钩旁观）
-#   QQ_NVENC_PROBE=1          配合 QQ_NVENC=1：旁听原实现回调（排查用；正式路径不动原实现）
+#   QQ_NVENC_PROBE=1          只挂钩旁观、不接管（排查用；旁听原实现回调）
 #   QQ_CLIPBOARD_FIX_DISABLE=1 关闭剪贴板修复（排查问题用）
 #   QQ_CLIPBOARD_FIX_FORCE=1   强制启用剪贴板修复（KDE 上默认禁用，仅供测试）
 #   QQ_SCREENSHOT_FIX_DISABLE=1 关闭截图防闪退（排查问题用）
