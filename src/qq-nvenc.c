@@ -28,6 +28,7 @@
  *
  * 开关：
  *   QQ_NVENC=1              屏幕共享改用 NVENC 编 H.264（默认关，失败自动回落原实现）
+ *   QQ_NVENC_SEQ=frame      帧号改用输入帧 +0x10 的 64 位值（调试用；默认编码器计数器）
  *   QQ_NVENC_PROBE=1        只挂钩旁观、不接管（排查用）
  *   QQ_NVENC_PROBE_DUMP=0   配合 PROBE：打印字节
  */
@@ -76,15 +77,14 @@
 #define PKT_OFF_QP        0x10u
 #define PKT_OFF_LEN       0x14u
 #define PKT_OFF_DATA      0x18u
-#define PKT_OFF_TYPE      0x20u   /* 帧类型：1=关键帧、2=I、3=P/B（原实现按输入帧类型查表） */
+#define PKT_OFF_TYPE      0x20u   /* 帧类型：1=关键帧、3=非关键帧（原实现按输入帧类型查表，表里还有 2） */
 #define PKT_TYPE_KEY      1u
-#define PKT_TYPE_I        2u
 #define PKT_TYPE_DELTA    3u
 
 /* VideoFrame 布局 */
 #define VF_OFF_W          0x00u
 #define VF_OFF_H          0x04u
-#define VF_OFF_SEQ        0x10u   /* 输入帧自带的 64 位帧号（原实现原样写进 packet+0x00/+0x08） */
+#define VF_OFF_SEQ        0x10u   /* 输入帧 +0x10 的 64 位值（反汇编：原实现把它写进 packet+0x00/+0x08） */
 #define VF_OFF_YPITCH     0x18u
 #define VF_OFF_UVPITCH    0x1cu
 #define VF_OFF_Y          0x28u
@@ -106,6 +106,7 @@ static void *trampoline;                  /* 原实现（前 14 字节 + 跳回�
 static int probe_dump;                    /* 默认关：排查完就没必要每帧打十六进制 */
 static int probe_cb;                      /* 默认关：只在排查时用转发壳旁听原实现回调 */
 static int nv_active;                     /* 是否真的用 NVENC */
+static int seq_from_frame;                /* QQ_NVENC_SEQ=frame：帧号用输入帧 +0x10（默认用计数器） */
 
 /* ---------- 环境开关 ---------- */
 
@@ -287,7 +288,6 @@ struct wrapped {
     /* DoEncode 期间暂存 AVSDK 递进来的 packet/frame（码流还在锁定时就要往里填） */
     void *cur_packet;
     void *cur_frame;
-    int last_pic_type;            /* 本帧 NVENC 返回的 pictureType */
 };
 #define MAX_WRAPPED 8
 static struct wrapped wrapped[MAX_WRAPPED];
@@ -599,7 +599,6 @@ static int nv_encode(struct wrapped *w, VideoFrame *f,
         if (w->encode_calls <= 3)
             LOG("NVENC: 出流 %u 字节 qp=%u type=%d", lb.bitstreamSizeInBytes,
                 lb.frameAvgQP, (int)lb.pictureType);
-        w->last_pic_type = (int)lb.pictureType;
         r = emit ? emit(emit_ctx, lb.bitstreamBufferPtr, lb.bitstreamSizeInBytes,
                         lb.frameAvgQP, lb.pictureType == NV_ENC_PIC_TYPE_IDR) : 0;
     } else {
@@ -660,36 +659,40 @@ static int our_uninit(void *self)
 
 /* 码流还在锁定时被 nv_encode 调用：填 AVSDK 递进来的 VideoPacket，然后通知上层。
  * 回调必须在解锁前完成，见 nv_encode 里的说明。
- * 字段按原实现反汇编对齐（CO264RTEncoder::Encode）：
- *   +0x00/+0x08 输入帧自带的 64 位帧号（frame+0x10，两处各写 8 字节）
- *   +0x10 平均 QP  +0x14 长度  +0x18 码流指针
- *   +0x20 帧类型：1=关键帧、2=I 帧、3=P/B 帧
- * 帧号是 AVSDK 的全局编号（跨编码器对象继续、不随会话重置），不能用编码器自己的
- * 计数器代替：下游按帧号做队列匹配，对不上时对端收不到画面（实机验证）。 */
+ * 字段：
+ *   +0x00/+0x08 帧序号（两处同值）  +0x10 平均 QP
+ *   +0x14 长度  +0x18 码流指针  +0x20 帧类型：1=关键帧、3=非关键帧
+ * 帧号来源（2026-10-04）：反汇编显示原实现 CO264RTEncoder::Encode 把输入帧 +0x10
+ * 的 64 位值原样写进 +0x00/+0x08（两处各 8 字节），但按该来源实机测试对端看不到
+ * 画面（FJKiXfaR 等反馈），而计数器方案（4 字节）实机正常——先回退到计数器，
+ * QQ_NVENC_SEQ=frame 可切回帧号来源做 A/B 对比；两种来源下都会打印 frame+0x10
+ * 的运行时取值，便于和原实现的 dump 对齐。 */
 static int nv_emit_to_avsdk(void *ctx, const void *data, uint32_t size, uint32_t qp, int is_idr)
 {
     struct wrapped *w = ctx;
     void *pk = w->cur_packet;
+    uint64_t frame_seq = 0;
     long long idx;
-    uint64_t seq;
-    int ftype;
 
     if (!pk || !w->cb0)
         return -1;
+    if (w->cur_frame)
+        frame_seq = get64((const char *)w->cur_frame + VF_OFF_SEQ);
     idx = w->frame_idx++;
-    /* 帧号用输入帧自带的（与原实现一致）：全局编号、跨会话继续，不能用计数器。 */
-    seq = w->cur_frame ? get64((const char *)w->cur_frame + VF_OFF_SEQ) : (uint64_t)idx;
-    ftype = is_idr ? PKT_TYPE_KEY
-                   : (w->last_pic_type == NV_ENC_PIC_TYPE_I ? PKT_TYPE_I : PKT_TYPE_DELTA);
-    memcpy((char *)pk + PKT_OFF_SEQ, &seq, 8);
-    memcpy((char *)pk + PKT_OFF_IDX, &seq, 8);
+    if (seq_from_frame) {
+        memcpy((char *)pk + PKT_OFF_SEQ, &frame_seq, 8);
+        memcpy((char *)pk + PKT_OFF_IDX, &frame_seq, 8);
+    } else {
+        put32((char *)pk + PKT_OFF_SEQ, (uint32_t)idx);
+        put32((char *)pk + PKT_OFF_IDX, (uint32_t)idx);
+    }
     put32((char *)pk + PKT_OFF_QP, qp);
     put32((char *)pk + PKT_OFF_LEN, size);
     put64((char *)pk + PKT_OFF_DATA, (void *)(uintptr_t)data);
-    put32((char *)pk + PKT_OFF_TYPE, (uint32_t)ftype);
+    put32((char *)pk + PKT_OFF_TYPE, is_idr ? PKT_TYPE_KEY : PKT_TYPE_DELTA);
     if (w->encode_calls <= 4)
-        LOG("NVENC 出帧 帧号=%llu 类型=%d %s %u 字节 qp=%u -> 回调",
-            (unsigned long long)seq, ftype, is_idr ? "IDR" : "P", size, qp);
+        LOG("NVENC 出帧 idx=%lld frame+0x10=%llu %s %u 字节 qp=%u -> 回调",
+            idx, (unsigned long long)frame_seq, is_idr ? "IDR" : "P", size, qp);
     ((pkt_cb_fn)w->cb0)(w->cb_ctx, &pk, w->cb1);
     if (w->encode_calls <= 4)
         LOG("NVENC: 回调已返回");
@@ -1028,6 +1031,11 @@ static void qq_nvenc_init(void)
     probe_dump = flag_on("QQ_NVENC_PROBE_DUMP", 0);
     probe_cb = flag_on("QQ_NVENC_PROBE", 0);
     nv_active = !probe_cb;              /* 默认直接接管；PROBE 模式才只挂钩旁观 */
+    {
+        const char *sq = getenv("QQ_NVENC_SEQ");
+
+        seq_from_frame = sq && !strcmp(sq, "frame");
+    }
     if (!is_ppapi_process())
         return;
 
