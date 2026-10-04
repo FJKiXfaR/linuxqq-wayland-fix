@@ -102,6 +102,8 @@ static int is_qq_main_on_wayland(void)
 static int enabled;
 static int wake_pipe[2] = { -1, -1 };
 static volatile uint32_t copy_generation;   /* QQ 每复制一次 +1 */
+static uint32_t marker_generation;           /* 最近一次放到 Wayland 上的副本对应的复制 */
+static uint32_t settled_generation;          /* 副本已经回到 Wayland 上（或这次复制无需转发）的复制 */
 
 static void wake(void)
 {
@@ -121,7 +123,23 @@ static Atom A_CLIPBOARD, A_TARGETS, A_INCR, A_PROP, A_UTF8, A_GNOME_FILES;
 static XSelectionRequestEvent pending[MAX_PENDING];
 static int n_pending;
 
-/* 等某类事件，超时返回 0。 */
+static int fixes_event_base = -1;
+static void note_x11_owner(Window owner);
+
+/* XFixes：别的 X11 程序每次设置 CLIPBOARD（即复制）都会通知，同一个窗口连续复制也会 */
+typedef struct {                     /* XFixesSelectionNotifyEvent */
+    int type;
+    unsigned long serial;
+    Bool send_event;
+    Display *display;
+    Window window;
+    int subtype;
+    Window owner;
+    Atom selection;
+    Time timestamp, selection_timestamp;
+} FixesSelectionNotify;
+
+/* 等某类事件，超时返回 0。等待期间到达的 XFixes 通知照常记下，不能丢。 */
 static int wait_event(int type, Window w, XEvent *ev, int timeout_ms)
 {
     struct timespec start;
@@ -131,8 +149,21 @@ static int wait_event(int type, Window w, XEvent *ev, int timeout_ms)
             XNextEvent(xdpy, ev);
             if (ev->type == type && ev->xany.window == w)
                 return 1;
-            if (ev->type == SelectionRequest && n_pending < MAX_PENDING)
+            if (ev->type == SelectionRequest && ev->xselectionrequest.requestor == xwin) {
+                /*
+                 * 我们自己的 XConvertSelection 落到了自己头上：X 服务器还没处理新主人的
+                 * SetSelectionOwner（比如 QQ 刚复制，请求在不同的连接上），主人还是我们。
+                 * 当场拒绝，fetch 立即失败、由调用方稍后重试；否则要白等到超时（3 秒）。
+                 */
+                XSelectionEvent no = { SelectionNotify, 0, True, xdpy, xwin,
+                                       ev->xselectionrequest.selection, ev->xselectionrequest.target,
+                                       None, ev->xselectionrequest.time };
+                XSendEvent(xdpy, xwin, False, 0, (XEvent *)&no);
+                XFlush(xdpy);
+            } else if (ev->type == SelectionRequest && n_pending < MAX_PENDING)
                 pending[n_pending++] = ev->xselectionrequest;
+            else if (fixes_event_base >= 0 && ev->type == fixes_event_base)
+                note_x11_owner(((FixesSelectionNotify *)ev)->owner);
         }
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
@@ -557,21 +588,9 @@ static struct offer_info *current;   /* 当前提供给 X11 的 Wayland 内容 *
 static Window last_owner;            /* 上次处理 Wayland 变化（或 QQ 复制）时 X11 CLIPBOARD 的主人 */
 static volatile Window qq_owner;     /* QQ 自己设置 CLIPBOARD 时用的窗口 */
 
-/* XFixes：别的 X11 程序每次设置 CLIPBOARD（即复制）都会通知，同一个窗口连续复制也会 */
-static int fixes_event_base = -1;
+/* 由 XFixes 通知更新（note_x11_owner） */
 static Window x11_copy_owner;        /* 最近一次复制的普通 X11 程序的窗口 */
 static struct timespec x11_copy_at;
-typedef struct {                     /* XFixesSelectionNotifyEvent */
-    int type;
-    unsigned long serial;
-    Bool send_event;
-    Display *display;
-    Window window;
-    int subtype;
-    Window owner;
-    Atom selection;
-    Time timestamp, selection_timestamp;
-} FixesSelectionNotify;
 
 /*
  * X11 窗口 w 是不是合成器的 X11 剪贴板代理（wlroots / KWin 的 xwm 在合成器进程里，
@@ -703,6 +722,8 @@ static void dev_data_offer(void *d, struct ext_data_control_device_v1 *dev,
     ext_data_control_offer_v1_add_listener(offer, &offer_listener, info);
 }
 
+static int looks_like_mirror(void);
+
 static void dev_selection(void *d, struct ext_data_control_device_v1 *dev,
                           struct ext_data_control_offer_v1 *offer)
 {
@@ -710,11 +731,21 @@ static void dev_selection(void *d, struct ext_data_control_device_v1 *dev,
     struct offer_info *info = offer ? ext_data_control_offer_v1_get_user_data(offer) : NULL;
 
     if (info && info_has(info, MARKER_MIME)) {   /* 是我们自己从 QQ 转过去的 */
+        settled_generation = marker_generation;
         info_free(info);
         return;
     }
     info_free(current);
     current = info;
+
+    /*
+     * 连上 Wayland 时会先收到一次「当前剪贴板」。这时若 X11 剪贴板已经有主人（比如 QQ 刚复制过），
+     * 它的内容可能更新，不去抢；之后的变化通知一定比 X11 上的新，照常接管。
+     * 剪贴板为空时这次通知不带内容，同样算数，否则会把之后第一次真正的复制当成它。
+     */
+    static int initial = 1;
+    int first = initial;
+    initial = 0;
     if (!info)
         return;
 
@@ -722,13 +753,7 @@ static void dev_selection(void *d, struct ext_data_control_device_v1 *dev,
     Window owner = XGetSelectionOwner(xdpy, A_CLIPBOARD);
     drain_fixes();
 
-    /*
-     * 连上 Wayland 时会先收到一次「当前剪贴板」。这时若 X11 剪贴板已经有主人（比如 QQ 刚复制过），
-     * 它的内容可能更新，不去抢；之后的变化通知一定比 X11 上的新，照常接管。
-     */
-    static int initial = 1;
-    if (initial) {
-        initial = 0;
+    if (first) {
         last_owner = owner;
         if (owner != None && owner != xwin) {
             LOG("startup: X11 clipboard already owned, keep it");
@@ -740,18 +765,23 @@ static void dev_selection(void *d, struct ext_data_control_device_v1 *dev,
      * 这次 Wayland 变化是合成器（xwayland-satellite、KWin、wlroots）在同步某个 X11 程序的复制
      * （X11 窗口有焦点时它们会这样做）时，X11 一侧本来就是对的，不能去抢：抢了之后合成器又会
      * 把我们同步回 Wayland，来回循环，谁都读不到内容。判断依据：
-     *   - 普通 X11 程序刚设置过 CLIPBOARD（XFixes 通知，1.5 秒内）且仍是主人，一次复制可能被同步多次；
+     *   - QQ 刚复制、我们的副本还没回到 Wayland 上：这段时间的变化都是这次复制本身
+     *     （QQ 自己的 Chromium 剪贴板、合成器的镜像），不能从 QQ 手里抢；
      *   - 格式里有 TIMESTAMP / TARGETS / MULTIPLE 这类 X11 才有的名字（satellite 会原样转过来）；
-     *   - 没有 XFixes 时退而求其次：主人刚换成了别的 X11 程序。
+     *   - 没有 XFixes 时退而求其次：主人刚换成了别的 X11 程序；
+     *   - 普通 X11 程序或 QQ 刚设置过 CLIPBOARD（XFixes 通知，1.5 秒内）且仍是主人：
+     *     比较格式和内容（looks_like_mirror），一样才是镜像。一次复制可能被同步多次，
+     *     而用户也可能紧接着在别处复制了新内容，只看时间会把后者丢掉。
      * 主人若是合成器自己的代理窗口（它在把 Wayland 内容同步给 X11，但不一定能用），照常接管。
-     * QQ 自己刚复制时同理：随后 1.5 秒内的 Wayland 变化是在同步 QQ 的复制，不能从 QQ 手里抢。
      */
     int x11_names = info_has(info, "TIMESTAMP") || info_has(info, "TARGETS") || info_has(info, "MULTIPLE");
     int recent = owner == x11_copy_owner && ms_since(&x11_copy_at) < 1500;
+    int qq_settling = recent && owner == qq_owner && settled_generation != copy_generation;
     if (owner != None && owner != xwin &&
-        (recent ||
+        (qq_settling ||
          (owner != qq_owner && (x11_names || (fixes_event_base < 0 && owner != last_owner)) &&
-          !is_bridge_window(owner)))) {
+          !is_bridge_window(owner)) ||
+         (recent && looks_like_mirror()))) {
         last_owner = owner;
         LOG("Wayland clipboard follows X11 client 0x%lx, leave X11 as is", (unsigned long)owner);
         return;
@@ -805,8 +835,8 @@ static void *drain_fd(void *arg)
     return NULL;
 }
 
-/* 从当前 Wayland 内容读取某个 MIME 的数据。 */
-static long wl_receive(const char *mime, unsigned char **out)
+/* 从当前 Wayland 内容读取某个 MIME 的数据。timeout_ms 内没有新数据就停下，*complete 表示是否读到了 EOF。 */
+static long wl_receive_timeout(const char *mime, unsigned char **out, int timeout_ms, int *complete)
 {
     *out = NULL;
     if (!current)
@@ -827,14 +857,14 @@ static long wl_receive(const char *mime, unsigned char **out)
     int abort_read = 0;
     for (;;) {
         struct pollfd p = { fds[0], POLLIN, 0 };
-        int pr = poll(&p, 1, 30000);
+        int pr = poll(&p, 1, timeout_ms);
         if (pr < 0) {
             if (errno == EINTR)
                 continue;
             abort_read = 1;
             break;
         }
-        if (pr == 0) { /* 30 秒没有新数据：源不正常，余量交给 drain 线程 */
+        if (pr == 0) { /* 超时没有新数据：源不正常，余量交给 drain 线程 */
             abort_read = 1;
             break;
         }
@@ -870,8 +900,15 @@ static long wl_receive(const char *mime, unsigned char **out)
     } else {
         close(fds[0]);
     }
+    if (complete)
+        *complete = !abort_read;
     *out = buf;
     return (long)len;
+}
+
+static long wl_receive(const char *mime, unsigned char **out)
+{
+    return wl_receive_timeout(mime, out, 30000, NULL);
 }
 
 static int is_text_name(const char *n)
@@ -897,6 +934,98 @@ static const char *mime_for_target(const char *name, int *to_gnome)
         return "text/uri-list";
     }
     return info_has(current, name) ? name : NULL;
+}
+
+/* X11 才有的 target 名字：只会出现在合成器原样镜像过来的格式里 */
+static int is_x11_only_name(const char *n)
+{
+    return !strcmp(n, "TARGETS") || !strcmp(n, "TIMESTAMP") || !strcmp(n, "MULTIPLE") ||
+           !strcmp(n, "SAVE_TARGETS");
+}
+
+/* 判断是不是镜像时，读数据最多等这么久（读不到就当镜像，不抢） */
+#define MIRROR_CHECK_TIMEOUT_MS 1000
+
+/*
+ * X11 程序（或 QQ）刚复制、仍是 CLIPBOARD 的主人时又来了一次 Wayland 变化（current）：
+ * 是合成器在镜像那次复制，还是用户紧接着在 Wayland 程序里复制了新内容？
+ *   - Wayland 内容里有 X11 主人没有的格式：一定是新复制；
+ *   - 取一种双方都有的格式（优先文本）各读一份比较，不一样就是新复制；
+ *   - 拿不到 TARGETS、读不到数据或没有共同格式：当作镜像（宁可不抢，也不来回循环）。
+ * 只按时间判断的话，镜像窗口内的新复制会被当成镜像丢掉，QQ 粘贴拿到旧内容。
+ */
+static int looks_like_mirror(void)
+{
+    unsigned char *tdata = NULL;
+    Atom type;
+    long n = fetch(A_TARGETS, &tdata, &type);
+    if (n <= 0) {
+        free(tdata);
+        return 1;
+    }
+    Atom *targets = (Atom *)tdata;
+    long nt = n / sizeof(Atom);
+
+    Atom x_text = None;
+    for (long i = 0; i < nt; ++i) {
+        char *name = XGetAtomName(xdpy, targets[i]);
+        if (!name)
+            continue;
+        if (is_text_name(name) && (x_text == None || targets[i] == A_UTF8))
+            x_text = targets[i];
+        XFree(name);
+    }
+
+    int mirror = 1;
+    const char *mime = NULL;
+    Atom target = None;
+    for (int i = 0; i < current->n; ++i) {
+        const char *m = current->mimes[i];
+        if (is_x11_only_name(m))
+            continue;
+        if (is_text_name(m)) {
+            if (x_text == None) {
+                mirror = 0;
+                LOG("mirror check: X11 owner has no text, Wayland offers %s", m);
+                break;
+            }
+            continue;
+        }
+        Atom a = XInternAtom(xdpy, m, True);
+        if (a == None || !has_target(targets, nt, a)) {
+            mirror = 0;
+            LOG("mirror check: X11 owner does not offer %s", m);
+            break;
+        }
+        if (!mime && strchr(m, '/')) {
+            mime = m;
+            target = a;
+        }
+    }
+    free(tdata);
+    if (!mirror)
+        return 0;
+
+    int to_gnome;
+    const char *text_mime = x_text != None ? mime_for_target("UTF8_STRING", &to_gnome) : NULL;
+    if (text_mime) {
+        mime = text_mime;
+        target = x_text;
+    }
+    if (!mime)
+        return 1;
+
+    unsigned char *xbuf = NULL, *wbuf = NULL;
+    long xn = fetch(target, &xbuf, &type);
+    int complete = 0;
+    long wn = xn >= 0 ? wl_receive_timeout(mime, &wbuf, MIRROR_CHECK_TIMEOUT_MS, &complete) : -1;
+    if (xn >= 0 && wn >= 0 && complete && (xn != wn || memcmp(xbuf, wbuf, xn))) {
+        mirror = 0;
+        LOG("mirror check: %s differs from the X11 owner (%ld vs %ld bytes)", mime, wn, xn);
+    }
+    free(xbuf);
+    free(wbuf);
+    return mirror;
 }
 
 /* 当前 Wayland 内容对应的 X11 TARGETS。 */
@@ -1077,15 +1206,15 @@ static void reg_remove(void *d, struct wl_registry *r, uint32_t name)
 static const struct wl_registry_listener reg_listener = { reg_global, reg_remove };
 
 /* QQ 刚复制完：取 TARGETS，在 Wayland 上重新提供。 */
-static void on_qq_copy(void)
+static void on_qq_copy(uint32_t generation)
 {
     unsigned char *data = NULL;
     Atom type;
     long n = -1;
-    /* QQ 刚声明拥有剪贴板时，它的 X 事件循环可能还没来得及应答，失败就稍等重试。 */
-    for (int attempt = 0; attempt < 3; ++attempt) {
+    /* QQ 刚声明拥有剪贴板时，X 服务器或它的事件循环可能还没处理完，失败就稍等重试。 */
+    for (int attempt = 0; attempt < 6; ++attempt) {
         if (attempt)
-            usleep(200 * 1000);
+            usleep(attempt * 50 * 1000);
         free(data);
         n = fetch(A_TARGETS, &data, &type);
         if (n > 0)
@@ -1093,6 +1222,7 @@ static void on_qq_copy(void)
     }
     if (n <= 0) {
         LOG("QQ copied but TARGETS unavailable");
+        settled_generation = generation;
         free(data);
         return;
     }
@@ -1119,6 +1249,7 @@ static void on_qq_copy(void)
         offer_add(MARKER_MIME);
     if (!n_offered) {
         LOG("QQ copied but no transferable format");
+        settled_generation = generation;
         return;
     }
 
@@ -1139,6 +1270,7 @@ static void on_qq_copy(void)
         }
     }
     ext_data_control_device_v1_set_selection(device, source);
+    marker_generation = generation;
     wl_display_flush(wdpy);
     LOG("QQ copied -> Wayland: %s", list);
 }
@@ -1216,7 +1348,7 @@ static void *worker(void *arg)
         handle_x_events();
         if (copy_generation != seen) {
             seen = copy_generation;
-            on_qq_copy();
+            on_qq_copy(seen);
         }
     }
     return NULL;
