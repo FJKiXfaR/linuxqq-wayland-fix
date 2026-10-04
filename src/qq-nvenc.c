@@ -70,11 +70,15 @@
 #define VT_OFF_ENCODE     8u
 #define VT_ENTRIES        9u
 
-/* VideoPacket 里 AVSDK 读的字段 */
+/* VideoPacket 里 AVSDK 读的字段（按原实现实测对齐，旁听模式 dump 得到） */
+#define PKT_OFF_SEQ       0x00u   /* 帧序号（与 IDX 同值） */
 #define PKT_OFF_IDX       0x08u
 #define PKT_OFF_QP        0x10u
 #define PKT_OFF_LEN       0x14u
 #define PKT_OFF_DATA      0x18u
+#define PKT_OFF_TYPE      0x20u   /* 帧类型：原实现 IDR 填 1、P 填 3 */
+#define PKT_TYPE_KEY      1u
+#define PKT_TYPE_DELTA    3u
 
 /* VideoFrame 布局 */
 #define VF_OFF_W          0x00u
@@ -643,7 +647,11 @@ static int our_uninit(void *self)
 }
 
 /* 码流还在锁定时被 nv_encode 调用：填 AVSDK 递进来的 VideoPacket，然后通知上层。
- * 回调必须在解锁前完成，见 nv_encode 里的说明。 */
+ * 回调必须在解锁前完成，见 nv_encode 里的说明。
+ * 字段按原实现实测对齐（旁听模式 dump 得到）：
+ *   +0x00 帧序号（与 +0x08 同值）  +0x08 帧序号  +0x10 平均 QP
+ *   +0x14 长度  +0x18 码流指针  +0x20 帧类型（1=关键帧，3=非关键帧）
+ * 原实现把 +0x00 与 +0x20 也填上，只填后 4 个会让下游一直等不到关键帧。 */
 static int nv_emit_to_avsdk(void *ctx, const void *data, uint32_t size, uint32_t qp, int is_idr)
 {
     struct wrapped *w = ctx;
@@ -653,10 +661,12 @@ static int nv_emit_to_avsdk(void *ctx, const void *data, uint32_t size, uint32_t
     if (!pk || !w->cb0)
         return -1;
     idx = w->frame_idx++;
+    put32((char *)pk + PKT_OFF_SEQ, (uint32_t)idx);
     put32((char *)pk + PKT_OFF_IDX, (uint32_t)idx);
     put32((char *)pk + PKT_OFF_QP, qp);
     put32((char *)pk + PKT_OFF_LEN, size);
     put64((char *)pk + PKT_OFF_DATA, (void *)(uintptr_t)data);
+    put32((char *)pk + PKT_OFF_TYPE, is_idr ? PKT_TYPE_KEY : PKT_TYPE_DELTA);
     if (w->encode_calls <= 4)
         LOG("NVENC 出帧 idx=%lld %s %u 字节 qp=%u -> 回调", idx,
             is_idr ? "IDR" : "P", size, qp);
@@ -743,7 +753,7 @@ static int cb_tramp(void *ctx, void **pp_packet, void *user)
         LOG("原实现回调: self=%p ctx=%p user=%p *pp_packet=%p",
             w->obj, ctx, user, pk);
         if (pk && probe_dump) {
-            hexdump("  cb packet", pk, 0x40);
+            hexdump("  cb packet", pk, 0x80);
             void *d = getptr((char *)pk + PKT_OFF_DATA);
             uint32_t n = get32((char *)pk + PKT_OFF_LEN);
 
